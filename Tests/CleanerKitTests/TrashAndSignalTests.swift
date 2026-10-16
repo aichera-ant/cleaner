@@ -167,8 +167,32 @@ struct SignalTests {
         #expect(info.hasUnpushedCommits, "remote'ta olmayan commit var")
         try t.file("b.txt", bytes: 10, in: repo)
         #expect(try #require(await provider.info(repo: repo)).isDirty)
+        // Depo ayarındaki süzgeç (filter) komutu kirlilik denetiminde çalışmaz.
+        let marker = t.root.appending(path: "suzgec-calisti")
+        try "*.txt filter=kotu\n".write(to: repo.appending(path: ".gitattributes"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: repo.appending(path: "b.txt"))
+        try await git("add", ".")
+        try await git("commit", "-q", "-m", "attr")
+        try await git("config", "filter.kotu.clean", "sh -c 'echo x >> \"\(marker.path)\"; cat'")
+        // Aynı boyut, yeni tarih: git içeriği karşılaştırmak için süzgeci çağırırdı.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(30)],
+                                              ofItemAtPath: repo.appending(path: "a.txt").path)
+        let filtered = try #require(await provider.info(repo: repo))
+        #expect(!filtered.isDirty)
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "süzgeç çalıştı")
+        try await git("status", "--porcelain")
+        #expect(FileManager.default.fileExists(atPath: marker.path), "kontrol: düz status süzgeci çalıştırır")
         // Bulut kökündeki depoya girilmez.
         let cloudRepo = try t.dir("Library/Mobile Documents/com~apple~CloudDocs/r")
         #expect(await provider.info(repo: cloudRepo) == nil)
+    }
+
+    @Test("git süzgeç adları ayrıştırılır; güvensiz ad temkinli")
+    func gitFilterNames() {
+        let out = "filter.lfs.clean\ngit-lfs clean -- %f\u{0}filter.a.b.process\nx\u{0}filter.lfs.process\ny\u{0}"
+        #expect(GitCommand.filterNames(fromConfigZ: out) == ["a.b", "lfs"])
+        #expect(GitCommand.filterNames(fromConfigZ: "") == [])
+        #expect(GitCommand.filterNames(fromConfigZ: "filter.x=y.clean\nz\u{0}") == nil)
+        #expect(GitCommand.filterOverrides(["a"]) == ["-c", "filter.a.clean=", "-c", "filter.a.process="])
     }
 }

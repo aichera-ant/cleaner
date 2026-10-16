@@ -104,3 +104,10 @@ extension ScanContext {
         ScanContext(home: tree.home, roots: [tree.home], now: now, signals: signals, cloudGuard: cloudGuard, rules: rules)
     }
 }
+
+extension Trasher {
+    /// Test kolaylığı: verilen öğeler aynı zamanda tarama sonucudur (öğe listesi = tarama).
+    func trash(_ items: [CleanItem], dryRun: Bool = true) async -> TrashReport {
+        await trash(items, dryRun: dryRun, scanItems: items)
+    }
+}

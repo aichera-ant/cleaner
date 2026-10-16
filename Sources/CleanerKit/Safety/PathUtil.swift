@@ -48,6 +48,9 @@ enum PathUtil {
         return p
     }
 
+    /// Yol dizesinin karşılaştırma anahtarı: `canonical` + `key` (tarama ve taşıma aynı anahtarı kullanır).
+    static func canonicalKey(_ path: String) -> String { key(canonical(URL(fileURLWithPath: path))) }
+
     /// `path`, `ancestor` ile aynı ya da onun altında mı? (ikisi de `key` biçiminde)
     static func isSameOrDescendant(_ path: String, of ancestor: String) -> Bool {
         if path == ancestor { return true }

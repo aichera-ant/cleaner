@@ -80,14 +80,18 @@ struct Trash: AsyncParsableCommand {
         // grupları taşıma anında güncel olur. `--category` yalnız id çözümünü daraltır.
         let report = try await ScanEngine().scan(context)
         let filter = options.categoryFilter
-        let byID = Dictionary(report.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var selected: [CleanItem] = []
+        // Kategori süzgecine uymayan id'ler bulunamamış sayılır; geri kalanı Trasher tarama sonucundan çözer.
+        var selected: [String] = []
         var unknown: [String] = []
         for id in ids {
-            if let item = byID[id], filter?.contains(item.category) ?? true { selected.append(item) } else { unknown.append(id) }
+            if let filter, let item = report.items.first(where: { $0.id == id }), !filter.contains(item.category) {
+                unknown.append(id)
+            } else {
+                selected.append(id)
+            }
         }
         let trasher = Trasher(policy: context.pathPolicy, commands: context.signals.commands)
-        var result = await trasher.trash(selected, dryRun: dryRun, scanItems: report.items)
+        var result = await trasher.trash(ids: selected, scan: report.items, dryRun: dryRun)
         result.refused += unknown.map { TrashReport.Refused(id: $0, path: "", reason: "bu taramada bulunamadı") }
         if json {
             let enc = JSONEncoder()

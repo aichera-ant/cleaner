@@ -200,7 +200,10 @@ struct NestingTests {
         let moved = Counter()
         let tr = try trasher(t, moved: moved)
         let r = await tr.trash([unlocked], dryRun: false, scanItems: report.items)
-        #expect(r.done.isEmpty && r.refused.first?.reason.contains("İçinde kullanımdaki") == true)
+        #expect(r.done.isEmpty && r.refused.first?.reason == "öğe tarama sonucundan farklı")
+        // Tarama öğesinin kendisi (id ile) de kilitli olduğu için reddedilir.
+        let byID = await tr.trash(ids: [unlocked.id], scan: report.items, dryRun: false)
+        #expect(byID.done.isEmpty && byID.refused.first?.reason.hasPrefix("kilitli") == true)
         let boxItem = CleanItem(category: .largeOld, name: "kutu", path: box.path, allocatedBytes: 100, risk: .red)
         let r2 = await tr.trash([boxItem], dryRun: false, scanItems: report.items)
         #expect(r2.done.isEmpty && r2.refused.count == 1)
@@ -521,10 +524,49 @@ struct DuplicateGroupTrashTests {
     func keeperNeverMoves() async throws {
         let t = try TempTree()
         let keeper = try t.file("Documents/a.pdf")
+        let copy = try t.file("Downloads/a1.pdf")
+        // Taramadaki gerçek öğeler: tutulacak kopya bilgi/yöntemsiz.
+        let scan = [dup(keeper, keeper: keeper, risk: .info, method: .none), dup(copy, keeper: keeper)]
         let moved = Counter()
-        let r = await (try trasher(t, moved: moved)).trash([dup(keeper, keeper: keeper)], dryRun: false)
+        let tr = try trasher(t, moved: moved)
+
+        // Arayüzden değiştirilmiş öğe: grup alanları silinmiş, yeşil, Çöp Kutusu yöntemi.
+        var forged = CleanItem(category: .duplicates, name: "a.pdf", path: keeper.path, allocatedBytes: 10, risk: .green,
+                               method: .trash)
+        #expect(forged.id == scan[0].id && forged.groupID == nil)
+        var r = await tr.trash([forged], dryRun: false, scanItems: scan)
+        #expect(r.done.isEmpty && r.refused.first?.reason == "öğe tarama sonucundan farklı")
+        // Grup alanları duruyor ama risk/yöntem değiştirilmiş.
+        forged = dup(keeper, keeper: keeper)
+        r = await tr.trash([forged], dryRun: false, scanItems: scan)
+        #expect(r.done.isEmpty && r.refused.count == 1)
+        // id ile: tarama öğesi bilgi öğesi.
+        r = await tr.trash(ids: [scan[0].id], scan: scan, dryRun: false)
+        #expect(r.done.isEmpty && r.refused.first?.reason == "yalnız bilgi")
+        // Tarama da değiştirilmiş olsa bile (yeşil/trash) tutulacak kopya kuralı reddeder.
+        r = await tr.trash([forged], dryRun: false, scanItems: [forged])
         #expect(r.done.isEmpty && r.refused.first?.reason == "grubun tutulacak kopyası")
         #expect(moved.n == 0 && t.exists(keeper))
+    }
+
+    @Test("aynı çalıştırmada üst klasörü taşınan kopya kalan sayılmaz")
+    func copyInsideMovedFolder() async throws {
+        let t = try TempTree()
+        let keeper = try t.file("Documents/a.pdf")
+        let c1 = try t.file("Downloads/a1.pdf")
+        let c2 = try t.file("Downloads/klasor/a2.pdf")
+        let folder = CleanItem(category: .largeOld, name: "klasor", path: c2.deletingLastPathComponent().path,
+                               allocatedBytes: 10, risk: .green)
+        let scan = [dup(keeper, keeper: keeper, risk: .info, method: .none), dup(c1, keeper: keeper), dup(c2, keeper: keeper),
+                    folder]
+        // Tutulacak kopya taramadan sonra silinmiş: c2 klasörle gidecek, c1 kalmalı.
+        try FileManager.default.removeItem(at: keeper)
+        let moved = Counter()
+        let r = await (try trasher(t, moved: moved)).trash(ids: [scan[1].id, folder.id], scan: scan, dryRun: false)
+        #expect(r.refused.count == 1 && r.refused.first?.id == scan[1].id)
+        #expect(r.refused.first?.reason.contains("son kopyası") == true)
+        #expect(r.done.map(\.id) == [folder.id])
+        #expect(t.exists(c1) && !t.exists(c2))
     }
 
     @Test("grup alanları başka kategoride reddedilir")
@@ -587,5 +629,63 @@ struct DefaultRootsTests {
         #expect(try await dups.scan(none).count == 2)
         let narrowed = ScanContext(home: t.home, roots: [t.home.appending(path: "Downloads")], signals: .fake())
         #expect(try await dups.scan(narrowed).isEmpty)
+    }
+}
+
+// MARK: 13. Trasher yalnız tarama sonucuna güvenir
+
+@Suite("Trasher: güvenilir kaynak tarama sonucu")
+struct TrasherScanTrustTests {
+    @Test("değiştirilmiş kilitli öğe reddedilir (risk ve kilit nedeni silinse bile)")
+    func forgedLocked() async throws {
+        let t = try TempTree()
+        let f = try t.file("Library/Caches/app/a.bin")
+        let locked = CleanItem(category: .caches, name: "app", path: f.deletingLastPathComponent().path, allocatedBytes: 10,
+                               risk: .locked, lockReason: "çalışıyor")
+        var forged = locked
+        forged.risk = .green
+        forged.lockReason = nil
+        let moved = Counter()
+        let tr = try trasher(t, moved: moved)
+        let r = await tr.trash([forged], dryRun: false, scanItems: [locked])
+        #expect(r.done.isEmpty && r.refused.first?.reason == "öğe tarama sonucundan farklı")
+        let r2 = await tr.trash(ids: [locked.id], scan: [locked], dryRun: false)
+        #expect(r2.done.isEmpty && r2.refused.first?.reason.hasPrefix("kilitli") == true)
+        #expect(moved.n == 0 && t.exists(f))
+    }
+
+    @Test("id aynı, yol farklı öğe reddedilir")
+    func forgedPath() async throws {
+        let t = try TempTree()
+        let safe = try t.file("Library/Caches/x/a.bin")
+        let victim = try t.file("Documents/tez.docx")
+        let scanned = CleanItem(category: .caches, name: "x", path: safe.deletingLastPathComponent().path, allocatedBytes: 1,
+                                risk: .green)
+        var forged = scanned
+        forged.path = victim.path
+        let moved = Counter()
+        let r = await (try trasher(t, moved: moved)).trash([forged], dryRun: false, scanItems: [scanned])
+        #expect(r.done.isEmpty && r.refused.count == 1 && r.refused[0].reason == "öğe tarama sonucundan farklı")
+        #expect(moved.n == 0 && t.exists(victim))
+    }
+
+    @Test("taramada olmayan ya da taramada birden çok geçen id reddedilir")
+    func unknownID() async throws {
+        let t = try TempTree()
+        let f = try t.file("Library/Caches/y/a.bin")
+        let item = CleanItem(category: .caches, name: "y", path: f.deletingLastPathComponent().path, allocatedBytes: 1,
+                             risk: .green)
+        let moved = Counter()
+        let tr = try trasher(t, moved: moved)
+        let r = await tr.trash([item], dryRun: false, scanItems: [])
+        #expect(r.done.isEmpty && r.refused.first?.reason == "bu taramada bulunamadı")
+        let r2 = await tr.trash(ids: ["yok", item.id], scan: [], dryRun: false)
+        #expect(r2.done.isEmpty && r2.refused.count == 2)
+        let r3 = await tr.trash(ids: [item.id], scan: [item, item], dryRun: false)
+        #expect(r3.done.isEmpty && r3.refused.first?.reason == "taramada birden çok aynı id")
+        #expect(moved.n == 0 && t.exists(f))
+        // Eşleşen öğe kabul edilir.
+        let ok = await tr.trash([item], dryRun: false, scanItems: [item])
+        #expect(ok.refused.isEmpty && ok.done.count == 1 && moved.n == 1)
     }
 }

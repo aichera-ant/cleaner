@@ -78,6 +78,28 @@ public enum GitCommand {
         safetyArguments + ["-C", repo] + args
     }
 
+    /// `git config -z --get-regexp` çıktısından süzgeç (filter) adları. Ad `-c` ile güvenle boşa çıkarılamıyorsa
+    /// (`=` ya da satır sonu içeriyor) nil: çağıran temkinli davranır.
+    public static func filterNames(fromConfigZ output: String) -> [String]? {
+        var names = Set<String>()
+        for record in output.split(separator: "\0", omittingEmptySubsequences: true) {
+            let key = record.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+            guard key.hasPrefix("filter."), let dot = key.lastIndex(of: "."), dot > key.index(key.startIndex, offsetBy: 6) else {
+                continue
+            }
+            let name = String(key[key.index(key.startIndex, offsetBy: 7)..<dot])
+            if name.isEmpty || name.contains("=") || name.contains("\n") { return nil }
+            names.insert(name)
+        }
+        return names.sorted()
+    }
+
+    /// Depo ya da kullanıcı ayarındaki süzgeç komutlarını (`filter.<ad>.clean/process`) boşa çıkaran argümanlar.
+    /// `git status` kirlilik denetiminde dosya içeriğini bu komutlardan geçirebilir; boş komut süzgeç çalıştırmaz.
+    public static func filterOverrides(_ names: [String]) -> [String] {
+        names.flatMap { ["-c", "filter.\($0).clean=", "-c", "filter.\($0).process="] }
+    }
+
     /// Git alt süreçleri için ortam: sistem ayarı okunmaz, parola sorulmaz.
     public static let environment = ["GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"]
 }
@@ -108,7 +130,19 @@ public struct LiveGitInfo: GitInfoProviding {
 
         let remote = await git(["remote", "get-url", "origin"])
         let roots = await git(["rev-list", "--max-parents=0", "HEAD"])
-        let status = await git(["status", "--porcelain"])
+        // Kirlilik denetimi: depodaki süzgeç komutları boşa çıkarılır; alt modüllerin çalışma ağacına girilmez
+        // (alt modülün kendi süzgeçleri bilinmez; alt modül öğeleri kendi deposuyla ayrıca denetlenir).
+        // Süzgeç adları okunamazsa status çalıştırılmaz, depo kirli sayılır.
+        let filters = await git(["config", "-z", "--get-regexp", #"^filter\..*\.(clean|process)$"#])
+        let filterNames: [String]? = filters.flatMap { r in
+            if r.exitCode == 1 && !r.timedOut && r.stdout.isEmpty { return [] } // eşleşen ayar yok
+            return r.succeeded ? GitCommand.filterNames(fromConfigZ: r.stdout) : nil
+        }
+        let status: CommandResult? = if let filterNames {
+            await git(GitCommand.filterOverrides(filterNames) + ["status", "--porcelain", "--ignore-submodules=dirty"])
+        } else {
+            nil
+        }
         let unpushed = await git(["rev-list", "--count", "--branches", "--not", "--remotes"])
 
         func trimmed(_ r: CommandResult?) -> String? {

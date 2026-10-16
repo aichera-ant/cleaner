@@ -75,7 +75,7 @@ public struct ScanEngine: Sendable {
                 for try await p in group { partials.append(p) }
             }
             for (_, list, _) in partials {
-                for item in list { for p in item.footprint { phaseContext.claimedPaths.insert(Self.key(p)) } }
+                for item in list { for p in item.footprint { phaseContext.claimedPaths.insert(PathUtil.canonicalKey(p)) } }
             }
         }
         partials.sort { $0.0 < $1.0 } // kayıt sırası: eşitlikte ilk kayıtlı tarayıcı kazanır
@@ -102,8 +102,6 @@ public struct ScanEngine: Sendable {
         items.sort { ($0.allocatedBytes, $1.path) > ($1.allocatedBytes, $0.path) }
         return ScanReport(items: items, errors: partials.compactMap { $0.2 }, dropped: dropped)
     }
-
-    static func key(_ path: String) -> String { PathUtil.key(PathUtil.canonical(URL(fileURLWithPath: path))) }
 
     /// Kısıtlayıcılık: kilitli > bilgi > kırmızı > sarı > yeşil.
     static func restrictiveness(_ i: CleanItem) -> Int {
@@ -143,7 +141,7 @@ public struct ScanEngine: Sendable {
         var owners: [String: [Int]] = [:]
         var keys: [[String]] = []
         for (i, item) in items.enumerated() {
-            let ks = item.path.hasPrefix("/docker/") ? [] : item.footprint.map(key)
+            let ks = item.path.hasPrefix("/docker/") ? [] : item.footprint.map(PathUtil.canonicalKey)
             keys.append(ks)
             for k in ks { owners[k, default: []].append(i) }
         }

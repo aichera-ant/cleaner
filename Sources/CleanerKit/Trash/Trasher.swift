@@ -142,17 +142,35 @@ public struct Trasher: Sendable {
 
     /// Tarama sonucuna göre ret: öğenin alt ağacında (ilişkili yollar dahil) kilitli ya da yalnız bilgi
     /// (tutulacak mükerrer kopya dahil) başka bir öğe varsa öğe taşınmaz.
+    /// `item` tarama öğesinin kendisidir (id'ler taramada tekildir; belirsiz id önceden reddedilir).
     func scanContextRejection(_ item: CleanItem, scanItems: [CleanItem]) -> String? {
-        let mine = item.footprint.map { Trasher.key($0) }
+        let mine = item.footprint.map { PathUtil.canonicalKey($0) }
         for other in scanItems where other.id != item.id && (other.isLocked || other.risk == .info) {
-            for k in other.footprint.map({ Trasher.key($0) }) where mine.contains(where: { PathUtil.isSameOrDescendant(k, of: $0) }) {
+            for k in other.footprint.map({ PathUtil.canonicalKey($0) }) where mine.contains(where: { PathUtil.isSameOrDescendant(k, of: $0) }) {
                 return "İçinde kullanımdaki ya da tutulacak öğe var: \(other.path)"
             }
         }
         return nil
     }
 
-    static func key(_ path: String) -> String { PathUtil.key(PathUtil.canonical(URL(fileURLWithPath: path))) }
+    /// Dışarıdan gelen öğe, aynı id'li tarama öğesiyle güvenlikle ilgili bütün alanlarda aynı mı?
+    static func matchesScan(_ item: CleanItem, _ scanned: CleanItem) -> Bool {
+        item.id == scanned.id && item.path == scanned.path && item.category == scanned.category
+            && item.risk == scanned.risk && item.lockReason == scanned.lockReason && item.method == scanned.method
+            && item.groupID == scanned.groupID && item.keeperPath == scanned.keeperPath
+            && item.isDuplicateKeeper == scanned.isDuplicateKeeper && item.relatedPaths == scanned.relatedPaths
+            && item.preselect == scanned.preselect
+    }
+
+    /// id -> tarama öğesi. Taramada birden çok kez geçen id belirsizdir (`ambiguous`), hiçbiri kullanılmaz.
+    static func index(_ scan: [CleanItem]) -> (byID: [String: CleanItem], ambiguous: Set<String>) {
+        var byID: [String: CleanItem] = [:]
+        var ambiguous = Set<String>()
+        for item in scan {
+            if byID[item.id] != nil { ambiguous.insert(item.id) } else { byID[item.id] = item }
+        }
+        return (byID, ambiguous)
+    }
 
     /// Uygulama öğesi taşınamıyorsa nedeni.
     func appRejectionReason(for item: CleanItem) -> String? {
@@ -213,25 +231,68 @@ public struct Trasher: Sendable {
             : error.localizedDescription
     }
 
-    /// Seçilen öğeleri taşır (dry-run'da yalnız raporlar).
+    /// Ana giriş: tarama sonucundaki id'leri taşır (dry-run'da yalnız raporlar).
     ///
-    /// `scanItems`: aynı taramanın bütün öğeleri (CLI verir). Verilirse alt ağacında kilitli/bilgi öğesi olan
-    /// öğe reddedilir ve mükerrer gruplarının tamamı bilinir.
-    /// Aynı çalıştırmada hem üst hem alt öğe seçilirse alt öğe "üst öğeyle birlikte taşınıyor" diye atlanır
-    /// (ret değildir, toplama girmez). Bir mükerrer grubunun hiç kopyası kalmayacaksa son kopya reddedilir.
-    public func trash(_ items: [CleanItem], dryRun: Bool = true, scanItems: [CleanItem]? = nil) async -> TrashReport {
+    /// Güvenilir kaynak yalnız `scan`'dir (aynı taramanın bütün öğeleri): her id tarama öğesine çözülür ve bütün
+    /// kararlar o öğenin alanlarıyla verilir. Taramada olmayan ya da birden çok kez geçen id reddedilir.
+    /// Alt ağacında kilitli/bilgi öğesi olan öğe reddedilir. Aynı çalıştırmada hem üst hem alt öğe seçilirse alt öğe
+    /// "üst öğeyle birlikte taşınıyor" diye atlanır (ret değildir, toplama girmez). Bir mükerrer grubunun hiç
+    /// kopyası kalmayacaksa son kopya reddedilir.
+    public func trash(ids: [String], scan: [CleanItem], dryRun: Bool = true) async -> TrashReport {
         var report = TrashReport(dryRun: dryRun, done: [], refused: [])
-        var handled = Set<String>()
-        var accepted: [CleanItem] = []
+        let (byID, ambiguous) = Trasher.index(scan)
+        var selected: [CleanItem] = []
+        var seen = Set<String>()
+        for id in ids {
+            guard seen.insert(id).inserted else { continue }
+            guard !ambiguous.contains(id) else {
+                report.refused.append(.init(id: id, path: "", reason: "taramada birden çok aynı id"))
+                continue
+            }
+            guard let scanned = byID[id] else {
+                report.refused.append(.init(id: id, path: "", reason: "bu taramada bulunamadı"))
+                continue
+            }
+            selected.append(scanned)
+        }
+        return await run(selected, scan: scan, dryRun: dryRun, report: report)
+    }
+
+    /// Öğe listesiyle giriş (arayüz JSON'dan öğe verebilir). Öğeler güvenilmez: her öğe id'siyle `scanItems`'taki
+    /// tarama öğesine eşlenir; eşleşmeyen ya da güvenlikle ilgili herhangi bir alanı (yol, kategori, risk, kilit,
+    /// yöntem, grup alanları, ilişkili yollar, ön seçim) farklı olan reddedilir. Kararlar tarama öğesiyle verilir.
+    public func trash(_ items: [CleanItem], dryRun: Bool = true, scanItems: [CleanItem]) async -> TrashReport {
+        var report = TrashReport(dryRun: dryRun, done: [], refused: [])
+        let (byID, ambiguous) = Trasher.index(scanItems)
+        var ids: [String] = []
+        var seen = Set<String>()
         for item in items {
-            guard handled.insert(item.id).inserted else { continue }
-            if let reason = rejectionReason(for: item) ?? scanItems.flatMap({ scanContextRejection(item, scanItems: $0) }) {
+            guard seen.insert(item.id).inserted else { continue }
+            if let scanned = byID[item.id], !ambiguous.contains(item.id), !Trasher.matchesScan(item, scanned) {
+                report.refused.append(.init(id: item.id, path: item.path, reason: "öğe tarama sonucundan farklı"))
+                continue
+            }
+            ids.append(item.id)
+        }
+        let rest = await trash(ids: ids, scan: scanItems, dryRun: dryRun)
+        report.done += rest.done
+        report.refused += rest.refused
+        report.skipped += rest.skipped
+        return report
+    }
+
+    /// `selected`: tarama öğeleri (güvenilir).
+    private func run(_ selected: [CleanItem], scan: [CleanItem], dryRun: Bool, report initial: TrashReport) async -> TrashReport {
+        var report = initial
+        var accepted: [CleanItem] = []
+        for item in selected {
+            if let reason = rejectionReason(for: item) ?? scanContextRejection(item, scanItems: scan) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 continue
             }
             accepted.append(item)
         }
-        accepted = applyGroupRule(accepted, scanItems: scanItems, report: &report)
+        accepted = applyGroupRule(accepted, scanItems: scan, report: &report)
 
         // Üst öğeler önce: alt öğe, üst öğesi bu çalıştırmada taşındıysa atlanır.
         let ordered = accepted.enumerated().sorted { a, b in
@@ -242,14 +303,14 @@ public struct Trasher: Sendable {
         for item in ordered {
             let isVirtual = item.path.hasPrefix("/docker/")
             if !isVirtual {
-                let k = Trasher.key(item.path)
+                let k = PathUtil.canonicalKey(item.path)
                 if let parent = coveredKeys.first(where: { PathUtil.isSameOrDescendant(k, of: $0.key) }) {
                     report.skipped.append(.init(id: item.id, path: item.path, reason: "üst öğeyle birlikte taşınıyor: \(parent.path)"))
                     continue
                 }
             }
             if await process(item, dryRun: dryRun, report: &report), !isVirtual {
-                coveredKeys += item.footprint.map { (Trasher.key($0), item.path) }
+                coveredKeys += item.footprint.map { (PathUtil.canonicalKey($0), item.path) }
             }
         }
         return report
@@ -258,23 +319,28 @@ public struct Trasher: Sendable {
     static func depth(_ path: String) -> Int { path.split(separator: "/").count }
 
     /// Mükerrer grupları: taşıma sonunda grubun en az bir kopyası (diskte var olan, taşınmayan) kalmalı.
-    /// Kalmayacaksa grubun seçilen son öğesi reddedilir.
-    private func applyGroupRule(_ accepted: [CleanItem], scanItems: [CleanItem]?, report: inout TrashReport) -> [CleanItem] {
+    /// Kalmayacaksa grubun seçilen son öğesi reddedilir. Kabul edilen herhangi bir öğenin (ilişkili yollar dahil)
+    /// altında kalan kopya da taşınıyor sayılır (aynı çalıştırmada üst klasörü taşınan kopya kalmaz).
+    private func applyGroupRule(_ accepted: [CleanItem], scanItems: [CleanItem], report: inout TrashReport) -> [CleanItem] {
         var rejected = Set<String>()
         let groups = Set(accepted.compactMap(\.groupID))
+        guard !groups.isEmpty else { return accepted }
+        // Bu çalıştırmada taşınacak/kapsanacak yollar (docker sanal yolları hariç). Komut öğeleri de temkinli
+        // olarak kapsayan sayılır.
+        let coveredKeys = accepted.filter { !$0.path.hasPrefix("/docker/") }
+            .flatMap(\.footprint).map { PathUtil.canonicalKey($0) }
         for g in groups.sorted() {
-            let selected = accepted.filter { $0.groupID == g }
+            let selected = accepted.filter { $0.groupID == g && !rejected.contains($0.id) }
             // Grubun bilinen bütün kopyaları: anahtar -> gerçek yol.
             var members: [String: String] = [:]
-            for i in (scanItems ?? []) where i.groupID == g { members[Trasher.key(i.path)] = i.path }
+            for i in scanItems where i.groupID == g { members[PathUtil.canonicalKey(i.path)] = i.path }
             for i in selected {
-                members[Trasher.key(i.path)] = i.path
-                if let k = i.keeperPath { members[Trasher.key(k)] = k }
+                members[PathUtil.canonicalKey(i.path)] = i.path
+                if let k = i.keeperPath { members[PathUtil.canonicalKey(k)] = k }
             }
-            let moving = Set(selected.map { Trasher.key($0.path) })
             let staying = members.filter { key, path in
                 var st = stat()
-                return !moving.contains(key) && lstat(path, &st) == 0
+                return !coveredKeys.contains(where: { PathUtil.isSameOrDescendant(key, of: $0) }) && lstat(path, &st) == 0
             }
             if staying.isEmpty, let last = selected.last {
                 rejected.insert(last.id)
