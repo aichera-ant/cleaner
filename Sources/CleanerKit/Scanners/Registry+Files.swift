@@ -3,5 +3,8 @@
 // Her tarayıcı kendi dosyasında (ör. Scanners/DuplicatesScanner.swift); buraya yalnız bir `r.register(...)` satırı eklenir.
 extension CleanerRegistry {
     static func registerFileScanners(_ r: inout CleanerRegistry) {
+        r.register(LargeOldScanner())
+        r.register(DuplicatesScanner())
+        r.register(FoldersScanner())
     }
 }
