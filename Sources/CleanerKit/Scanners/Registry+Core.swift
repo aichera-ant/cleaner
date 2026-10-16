@@ -2,5 +2,6 @@
 extension CleanerRegistry {
     static func registerCoreScanners(_ r: inout CleanerRegistry) {
         r.register(RuleBasedScanner())
+        r.register(AppsScanner())
     }
 }
