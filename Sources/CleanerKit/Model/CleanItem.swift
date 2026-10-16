@@ -122,6 +122,9 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     public var lockReason: String?
     public var note: String?
     public var method: CleanMethod
+    /// Öğeyle birlikte taşınan ek yollar (yalnız `apps`: bundle id ile tam eşleşen `~/Library` artıkları).
+    /// Diğer kategorilerde nil; `Trasher` başka kategoride dolu gelirse öğeyi reddeder.
+    public var relatedPaths: [String]?
 
     public init(
         category: Category,
@@ -132,7 +135,8 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         dateSignal: DateSignal = .unknown,
         lockReason: String? = nil,
         note: String? = nil,
-        method: CleanMethod = .trash
+        method: CleanMethod = .trash,
+        relatedPaths: [String]? = nil
     ) {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         self.id = CleanItem.makeID(path: standardized)
@@ -145,6 +149,8 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         self.lockReason = lockReason
         self.note = note
         self.method = method
+        let related = relatedPaths?.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? []
+        self.relatedPaths = related.isEmpty ? nil : related
     }
 
     public var url: URL { URL(fileURLWithPath: path) }
