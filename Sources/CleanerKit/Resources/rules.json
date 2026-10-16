@@ -110,6 +110,76 @@
       "description": "Docker Desktop kurulumundan kalan dosyalar; Docker çalışması için gerekmez.",
       "method": "trash",
       "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "homebrew-cache",
+      "path": "~/Library/Caches/Homebrew",
+      "category": "caches",
+      "risk": "green",
+      "name": "Homebrew önbelleği",
+      "description": "İndirilen paket dosyaları; brew kendi komutuyla temizler, gerekirse yeniden indirir.",
+      "method": { "kind": "command", "command": "brew cleanup -s" },
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "prisma-engines",
+      "path": "~/.cache/prisma",
+      "category": "caches",
+      "risk": "yellow",
+      "name": "Prisma motorları",
+      "description": "Prisma'nın indirdiği motor dosyaları; ilk kullanımda yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "giget-cache",
+      "path": "~/.cache/giget",
+      "category": "caches",
+      "risk": "green",
+      "name": "giget şablon önbelleği",
+      "description": "Şablon indirme önbelleği; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "yarn-cache",
+      "path": "~/Library/Caches/Yarn",
+      "category": "caches",
+      "risk": "green",
+      "name": "Yarn önbelleği",
+      "description": "Yarn paket önbelleği; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "bun-cache",
+      "path": "~/.bun/install/cache",
+      "category": "caches",
+      "risk": "green",
+      "name": "Bun önbelleği",
+      "description": "Bun paket önbelleği; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "pip-cache",
+      "path": "~/Library/Caches/pip",
+      "category": "caches",
+      "risk": "green",
+      "name": "pip önbelleği",
+      "description": "pip paket önbelleği; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "cocoapods-cache",
+      "path": "~/Library/Caches/CocoaPods",
+      "category": "caches",
+      "risk": "green",
+      "name": "CocoaPods önbelleği",
+      "description": "CocoaPods indirme önbelleği; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
     }
   ]
 }

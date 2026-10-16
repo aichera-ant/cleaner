@@ -3,5 +3,9 @@
 // Her tarayıcı kendi dosyasında (ör. Scanners/XcodeScanner.swift); buraya yalnız bir `r.register(...)` satırı eklenir.
 extension CleanerRegistry {
     static func registerDeveloperScanners(_ r: inout CleanerRegistry) {
+        r.register(XcodeScanner())
+        r.register(ProjectArtifactsScanner())
+        r.register(DockerScanner())
+        r.register(OldVersionsScanner())
     }
 }
