@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "npm-cache",
+      "path": "~/.npm",
+      "category": "caches",
+      "risk": "green",
+      "name": "npm önbelleği",
+      "description": "npm paket önbelleği; npm kendi komutuyla temizlenir, gerektiğinde yeniden indirir.",
+      "method": { "kind": "command", "command": "npm cache clean --force" },
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "pnpm-store",
+      "path": "~/Library/pnpm/store",
+      "category": "caches",
+      "risk": "green",
+      "name": "pnpm deposu",
+      "description": "pnpm içerik deposu; prune yalnız hiçbir projenin kullanmadığı paketleri siler, kazanç gösterilenden az olabilir.",
+      "method": { "kind": "command", "command": "pnpm store prune" },
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "pnpm-caches",
+      "path": "~/Library/Caches/pnpm",
+      "category": "caches",
+      "risk": "green",
+      "name": "pnpm önbelleği",
+      "description": "pnpm meta veri önbelleği; yeniden oluşturulur.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "google-caches",
+      "path": "~/Library/Caches/Google",
+      "category": "caches",
+      "risk": "green",
+      "name": "Chrome önbelleği",
+      "description": "Google Chrome tarayıcı önbelleği; yeniden oluşturulur.",
+      "method": "trash",
+      "locks": [{ "type": "processRunning", "name": "Google Chrome" }, { "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "playwright-browsers",
+      "path": "~/Library/Caches/ms-playwright",
+      "category": "caches",
+      "risk": "yellow",
+      "name": "Playwright tarayıcıları",
+      "description": "Playwright'ın indirdiği tarayıcılar; testler için yeniden indirilir (npx playwright install).",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "colima-caches",
+      "path": "~/Library/Caches/colima",
+      "category": "caches",
+      "risk": "green",
+      "name": "colima önbelleği",
+      "description": "colima indirme önbelleği (imaj dosyaları); yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "swiftpm-caches",
+      "path": "~/Library/Caches/org.swift.swiftpm",
+      "category": "caches",
+      "risk": "green",
+      "name": "SwiftPM önbelleği",
+      "description": "Swift Package Manager depo ve paket önbelleği; yeniden oluşturulur.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "node-gyp-caches",
+      "path": "~/Library/Caches/node-gyp",
+      "category": "caches",
+      "risk": "green",
+      "name": "node-gyp başlıkları",
+      "description": "node-gyp'in indirdiği Node başlık dosyaları; yeniden indirilir.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "claude-desktop-cache",
+      "path": "~/Library/Application Support/Claude/Cache",
+      "category": "caches",
+      "risk": "green",
+      "name": "Claude masaüstü önbelleği",
+      "description": "Claude masaüstü uygulamasının web önbelleği; yeniden oluşturulur.",
+      "method": "trash",
+      "locks": [{ "type": "processRunning", "name": "Claude" }, { "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "claude-vm-bundles",
+      "path": "~/Library/Application Support/Claude/vm_bundles",
+      "category": "caches",
+      "risk": "yellow",
+      "name": "Claude sanal makine paketi",
+      "description": "Claude masaüstü sanal makine paketi; gerektiğinde yeniden indirilir (büyük indirme).",
+      "method": "trash",
+      "locks": [{ "type": "processRunning", "name": "Claude" }, { "type": "modifiedWithin", "hours": 1 }]
+    },
+    {
+      "id": "docker-install-leftover",
+      "path": "~/Library/Application Support/com.docker.install",
+      "category": "docker",
+      "risk": "green",
+      "name": "Docker kurulum artığı",
+      "description": "Docker Desktop kurulumundan kalan dosyalar; Docker çalışması için gerekmez.",
+      "method": "trash",
+      "locks": [{ "type": "modifiedWithin", "hours": 1 }]
+    }
+  ]
+}
