@@ -28,7 +28,8 @@ public struct FoldersScanner: Cleaner {
     private func visit(_ dir: FSInfo, depth: Int, rootDev: dev_t, walker: FileWalker, context: ScanContext,
                        seen: inout Set<String>, items: inout [CleanItem]) async throws {
         try context.checkCancellation()
-        let names = FS.names(in: dir.path)
+        // Listelenemeyen klasör (izin/G/Ç hatası) "boş" sayılmaz: atlanır.
+        guard let names = FS.listing(dir.path) else { return }
         // Git kökü: içine hiç girilmez, aday olmaz.
         if names.contains(".git") { return }
         if depth > 0 {

@@ -14,15 +14,35 @@ public protocol Cleaner: Sendable {
     var id: String { get }
     /// Bu tarayıcının üretebileceği kategoriler (`--category` süzgeci için).
     var categories: Set<Category> { get }
+    /// Çalışma aşaması. 0: ilk aşama (paralel). 1: ilk aşama bittikten sonra, `context.claimedPaths`
+    /// dolu olarak çalışır (ör. büyük ve eski: başka tarayıcının öğesini kapsayan klasörü aday yapmaz).
+    var phase: Int { get }
     func scan(_ context: ScanContext) async throws -> [CleanItem]
+}
+
+extension Cleaner {
+    public var phase: Int { 0 }
 }
 
 /// Tarama bağlamı: kökler, zaman, sinyaller, güvenlik API'leri.
 public struct ScanContext: Sendable {
     /// Ana klasör. Testte geçici klasör verilir; `~` açılımı buna göre yapılır.
     public var home: URL
-    /// Proje artıkları vb. için taranacak kökler.
-    public var roots: [URL]
+    /// Kullanıcının verdiği kökler (`--roots`). nil: her tarayıcı kendi varsayılanını kullanır.
+    public var explicitRoots: [URL]?
+    /// Proje artıkları ve klasörler için taranacak kökler: verilmişse onlar, yoksa `defaultRoots`.
+    /// Atamak `explicitRoots`'u değiştirir.
+    public var roots: [URL] {
+        get { explicitRoots ?? ScanContext.defaultRoots(home: home) }
+        set { explicitRoots = newValue }
+    }
+    /// Kök verilmemişse `fallback`, verilmişse verilen kökler (tarayıcıya özgü varsayılan için).
+    public func roots(default fallback: [URL]) -> [URL] {
+        explicitRoots ?? fallback
+    }
+    /// İlk aşamadaki tarayıcıların ürettiği öğelerin yolları (`PathUtil.key(PathUtil.canonical(...))`).
+    /// Yalnız `phase >= 1` tarayıcılara dolu gelir.
+    public var claimedPaths: Set<String> = []
     /// "Şimdi" (testte sabitlenir).
     public var now: Date
     public var signals: Signals
@@ -36,7 +56,7 @@ public struct ScanContext: Sendable {
 
     public init(
         home: URL,
-        roots: [URL],
+        roots: [URL]?,
         now: Date = Date(),
         signals: Signals,
         sizeMeter: SizeMeter = SizeMeter(),
@@ -44,7 +64,7 @@ public struct ScanContext: Sendable {
         rules: [Rule] = []
     ) {
         self.home = home
-        self.roots = roots
+        self.explicitRoots = roots
         self.now = now
         self.signals = signals
         self.sizeMeter = sizeMeter
@@ -61,7 +81,7 @@ public struct ScanContext: Sendable {
         let guardian = CloudGuard(home: home)
         return ScanContext(
             home: home,
-            roots: roots ?? defaultRoots(home: home),
+            roots: roots,
             signals: .live(cloudGuard: guardian),
             cloudGuard: guardian,
             rules: try rules ?? RuleSet.loadBundled().rules

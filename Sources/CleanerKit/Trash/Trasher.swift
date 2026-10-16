@@ -33,6 +33,15 @@ public struct TrashReport: Codable, Sendable {
     public var dryRun: Bool
     public var done: [Done]
     public var refused: [Refused]
+    /// Ret değil: üst öğesi aynı çalıştırmada taşındığı için ayrıca işlenmeyenler (toplama girmez).
+    public var skipped: [Refused] = []
+
+    public init(dryRun: Bool, done: [Done], refused: [Refused], skipped: [Refused] = []) {
+        self.dryRun = dryRun
+        self.done = done
+        self.refused = refused
+        self.skipped = skipped
+    }
 
     public var totalBytes: UInt64 { done.reduce(0) { $0 &+ $1.bytes } }
 }
@@ -93,10 +102,35 @@ public struct Trasher: Sendable {
         if item.method == .none { return "temizleme yöntemi yok" }
         // Öğe kimliği yoluyla tutarlı olmalı (elle değiştirilmiş öğe ile başka yol taşınmasın).
         if item.id != CleanItem.makeID(path: item.path) { return "id ile yol uyuşmuyor" }
-        return pathRejectionReason(for: item)
+        if let reason = groupFieldRejection(item) { return reason }
+        if item.category == .apps, item.method != .trash { return "uygulama yalnız Çöp Kutusu'na taşınır" }
+        switch item.method {
+        case .none:
+            return "temizleme yöntemi yok"
+        case .command:
+            if item.relatedPaths != nil { return "ilişkili yollar yalnız uygulama öğesinde olabilir" }
+            if case .failure(let r) = CommandPolicy.validate(item, policy: policy) { return r.reason }
+            return nil
+        case .trash:
+            if item.path == "/docker" || item.path.hasPrefix("/docker/") {
+                return "docker öğesi Çöp Kutusu'na gönderilmez (yalnız docker komutuyla)"
+            }
+            return pathRejectionReason(for: item)
+        }
     }
 
-    /// Yol düzeyindeki kontroller (taşımadan hemen önce yeniden çağrılır).
+    /// Mükerrer alanları yalnız `duplicates` öğesinde olabilir; tutulacak kopya taşınmaz.
+    func groupFieldRejection(_ item: CleanItem) -> String? {
+        guard item.groupID != nil || item.keeperPath != nil else { return nil }
+        guard item.category == .duplicates else { return "grup bilgisi yalnız mükerrer öğesinde olabilir" }
+        guard item.groupID != nil, let keeper = item.keeperPath else { return "mükerrer grup bilgisi eksik" }
+        if PathUtil.key(PathUtil.canonical(URL(fileURLWithPath: keeper))) == PathUtil.key(PathUtil.canonical(item.url)) {
+            return "grubun tutulacak kopyası"
+        }
+        return nil
+    }
+
+    /// Yol düzeyindeki kontroller (Çöp Kutusu yöntemi; taşımadan hemen önce yeniden çağrılır).
     func pathRejectionReason(for item: CleanItem) -> String? {
         if item.category == .apps {
             guard item.method == .trash else { return "uygulama yalnız Çöp Kutusu'na taşınır" }
@@ -105,6 +139,20 @@ public struct Trasher: Sendable {
         if item.relatedPaths != nil { return "ilişkili yollar yalnız uygulama öğesinde olabilir" }
         return policy.trashRejectionReason(for: item.url)
     }
+
+    /// Tarama sonucuna göre ret: öğenin alt ağacında (ilişkili yollar dahil) kilitli ya da yalnız bilgi
+    /// (tutulacak mükerrer kopya dahil) başka bir öğe varsa öğe taşınmaz.
+    func scanContextRejection(_ item: CleanItem, scanItems: [CleanItem]) -> String? {
+        let mine = item.footprint.map { Trasher.key($0) }
+        for other in scanItems where other.id != item.id && (other.isLocked || other.risk == .info) {
+            for k in other.footprint.map({ Trasher.key($0) }) where mine.contains(where: { PathUtil.isSameOrDescendant(k, of: $0) }) {
+                return "İçinde kullanımdaki ya da tutulacak öğe var: \(other.path)"
+            }
+        }
+        return nil
+    }
+
+    static func key(_ path: String) -> String { PathUtil.key(PathUtil.canonical(URL(fileURLWithPath: path))) }
 
     /// Uygulama öğesi taşınamıyorsa nedeni.
     func appRejectionReason(for item: CleanItem) -> String? {
@@ -130,6 +178,11 @@ public struct Trasher: Sendable {
         }
         let related = item.relatedPaths ?? []
         if related.count > Trasher.maxRelatedPaths { return "çok fazla ilişkili yol" }
+        // Aynı bundle id'li başka kopya kuruluysa artıklar ortaktır; artıklı öğe taşınmaz.
+        if !related.isEmpty,
+           let other = AppsScanner.otherBundles(withID: info.bundleID, excluding: item.url, appRoots: policy.appRoots, reader: reader).first {
+            return "aynı bundle id'li başka kopya kurulu (\(other.path)); artıklar ortak"
+        }
         for r in related {
             if let why = policy.leftoverRejectionReason(for: URL(fileURLWithPath: r), bundleID: info.bundleID) {
                 return "artık reddedildi (\(r)): \(why)"
@@ -160,68 +213,144 @@ public struct Trasher: Sendable {
             : error.localizedDescription
     }
 
-    public func trash(_ items: [CleanItem], dryRun: Bool = true) async -> TrashReport {
+    /// Seçilen öğeleri taşır (dry-run'da yalnız raporlar).
+    ///
+    /// `scanItems`: aynı taramanın bütün öğeleri (CLI verir). Verilirse alt ağacında kilitli/bilgi öğesi olan
+    /// öğe reddedilir ve mükerrer gruplarının tamamı bilinir.
+    /// Aynı çalıştırmada hem üst hem alt öğe seçilirse alt öğe "üst öğeyle birlikte taşınıyor" diye atlanır
+    /// (ret değildir, toplama girmez). Bir mükerrer grubunun hiç kopyası kalmayacaksa son kopya reddedilir.
+    public func trash(_ items: [CleanItem], dryRun: Bool = true, scanItems: [CleanItem]? = nil) async -> TrashReport {
         var report = TrashReport(dryRun: dryRun, done: [], refused: [])
         var handled = Set<String>()
+        var accepted: [CleanItem] = []
         for item in items {
             guard handled.insert(item.id).inserted else { continue }
-            if let reason = rejectionReason(for: item) {
+            if let reason = rejectionReason(for: item) ?? scanItems.flatMap({ scanContextRejection(item, scanItems: $0) }) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 continue
             }
-            switch item.method {
-            case .none:
-                continue // rejectionReason yakalar
-            case .command(let cmd):
-                if dryRun {
-                    report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
+            accepted.append(item)
+        }
+        accepted = applyGroupRule(accepted, scanItems: scanItems, report: &report)
+
+        // Üst öğeler önce: alt öğe, üst öğesi bu çalıştırmada taşındıysa atlanır.
+        let ordered = accepted.enumerated().sorted { a, b in
+            let (da, db) = (Trasher.depth(a.element.path), Trasher.depth(b.element.path))
+            return da != db ? da < db : a.offset < b.offset
+        }.map(\.element)
+        var coveredKeys: [(key: String, path: String)] = []
+        for item in ordered {
+            let isVirtual = item.path.hasPrefix("/docker/")
+            if !isVirtual {
+                let k = Trasher.key(item.path)
+                if let parent = coveredKeys.first(where: { PathUtil.isSameOrDescendant(k, of: $0.key) }) {
+                    report.skipped.append(.init(id: item.id, path: item.path, reason: "üst öğeyle birlikte taşınıyor: \(parent.path)"))
                     continue
                 }
-                guard let result = await commands.runShell(cmd, timeout: commandTimeout) else {
-                    report.refused.append(.init(id: item.id, path: item.path, reason: "komut çalıştırılamadı: \(cmd)"))
-                    continue
-                }
-                if result.succeeded {
-                    report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
-                } else {
-                    let why = result.timedOut ? "zaman aşımı" : "çıkış kodu \(result.exitCode)"
-                    report.refused.append(.init(id: item.id, path: item.path, reason: "komut başarısız (\(why)): \(cmd)"))
-                }
-            case .trash:
-                if dryRun {
-                    report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: nil))
-                    if item.category == .apps, let id = appCheck(for: item).bundleID {
-                        appendLeftovers(item, bundleID: id, dryRun: true, to: &report)
-                    }
-                    continue
-                }
-                // Taşımadan hemen önce son kontrol (tarama ile taşıma arasında yol değişmiş olabilir).
-                var verifiedBundleID: String?
-                if item.category == .apps {
-                    let check = appCheck(for: item)
-                    if let reason = check.reason {
-                        report.refused.append(.init(id: item.id, path: item.path, reason: reason))
-                        continue
-                    }
-                    verifiedBundleID = check.bundleID
-                } else if let reason = pathRejectionReason(for: item) {
-                    report.refused.append(.init(id: item.id, path: item.path, reason: reason))
-                    continue
-                }
-                do {
-                    let resulting = try mover(item.url)
-                    report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
-                } catch {
-                    // Paket taşınamadıysa artıklarına dokunulmaz.
-                    report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
-                    continue
-                }
-                if let verifiedBundleID {
-                    appendLeftovers(item, bundleID: verifiedBundleID, dryRun: false, to: &report)
-                }
+            }
+            if await process(item, dryRun: dryRun, report: &report), !isVirtual {
+                coveredKeys += item.footprint.map { (Trasher.key($0), item.path) }
             }
         }
         return report
+    }
+
+    static func depth(_ path: String) -> Int { path.split(separator: "/").count }
+
+    /// Mükerrer grupları: taşıma sonunda grubun en az bir kopyası (diskte var olan, taşınmayan) kalmalı.
+    /// Kalmayacaksa grubun seçilen son öğesi reddedilir.
+    private func applyGroupRule(_ accepted: [CleanItem], scanItems: [CleanItem]?, report: inout TrashReport) -> [CleanItem] {
+        var rejected = Set<String>()
+        let groups = Set(accepted.compactMap(\.groupID))
+        for g in groups.sorted() {
+            let selected = accepted.filter { $0.groupID == g }
+            // Grubun bilinen bütün kopyaları: anahtar -> gerçek yol.
+            var members: [String: String] = [:]
+            for i in (scanItems ?? []) where i.groupID == g { members[Trasher.key(i.path)] = i.path }
+            for i in selected {
+                members[Trasher.key(i.path)] = i.path
+                if let k = i.keeperPath { members[Trasher.key(k)] = k }
+            }
+            let moving = Set(selected.map { Trasher.key($0.path) })
+            let staying = members.filter { key, path in
+                var st = stat()
+                return !moving.contains(key) && lstat(path, &st) == 0
+            }
+            if staying.isEmpty, let last = selected.last {
+                rejected.insert(last.id)
+                report.refused.append(.init(id: last.id, path: last.path, reason: "mükerrer grubunun son kopyası; en az bir kopya kalmalı"))
+            }
+        }
+        return accepted.filter { !rejected.contains($0.id) }
+    }
+
+    /// Tek öğeyi işler. Başarılıysa (dry-run'da kabul edildiyse) true.
+    private func process(_ item: CleanItem, dryRun: Bool, report: inout TrashReport) async -> Bool {
+        switch item.method {
+        case .none:
+            return false // rejectionReason yakalar
+        case .command(let cmd):
+            // Taşımadan hemen önce yeniden doğrula; kurulan biçim çalışır, öğedeki metin değil.
+            let exec: CommandPolicy.Exec
+            switch CommandPolicy.validate(item, policy: policy) {
+            case .failure(let r):
+                report.refused.append(.init(id: item.id, path: item.path, reason: r.reason))
+                return false
+            case .success(let e): exec = e
+            }
+            if dryRun {
+                report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
+                return true
+            }
+            let result: CommandResult? = switch exec {
+            case .argv(let tool, let args): await commands.run(tool, args, timeout: commandTimeout)
+            case .shell(let line): await commands.runShell(line, timeout: commandTimeout)
+            }
+            guard let result else {
+                report.refused.append(.init(id: item.id, path: item.path, reason: "komut çalıştırılamadı: \(cmd)"))
+                return false
+            }
+            if result.succeeded {
+                report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
+                return true
+            }
+            let why = result.timedOut ? "zaman aşımı" : "çıkış kodu \(result.exitCode)"
+            report.refused.append(.init(id: item.id, path: item.path, reason: "komut başarısız (\(why)): \(cmd)"))
+            return false
+        case .trash:
+            if dryRun {
+                report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: nil))
+                if item.category == .apps, let id = appCheck(for: item).bundleID {
+                    appendLeftovers(item, bundleID: id, dryRun: true, to: &report)
+                }
+                return true
+            }
+            // Taşımadan hemen önce son kontrol (tarama ile taşıma arasında yol değişmiş olabilir).
+            var verifiedBundleID: String?
+            if item.category == .apps {
+                let check = appCheck(for: item)
+                if let reason = check.reason {
+                    report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                    return false
+                }
+                verifiedBundleID = check.bundleID
+            } else if let reason = pathRejectionReason(for: item) {
+                report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                return false
+            }
+            do {
+                let resulting = try mover(item.url)
+                report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+            } catch {
+                // Paket taşınamadıysa artıklarına dokunulmaz.
+                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
+                return false
+            }
+            if let verifiedBundleID {
+                appendLeftovers(item, bundleID: verifiedBundleID, dryRun: false, to: &report)
+            }
+            return true
+        }
     }
 
     /// Uygulama artıkları: ana paketten sonra, her biri ayrı ayrı son kontrolle. Boyutları ana öğenin

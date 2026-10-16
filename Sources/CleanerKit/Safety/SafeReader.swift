@@ -14,11 +14,13 @@ public struct SafeReader: Sendable {
     public enum ReadError: Error, CustomStringConvertible, Sendable {
         case rejected(CloudGuard.Rejection)
         case io(String, Int32)
+        case cancelled
 
         public var description: String {
             switch self {
             case .rejected(let r): r.description
             case .io(let p, let e): "okuma hatası (\(e)): \(p)"
+            case .cancelled: "iptal edildi"
             }
         }
     }
@@ -83,6 +85,8 @@ public struct SafeReader: Sendable {
         var remaining = limit ?? Int.max
         var buffer = [UInt8](repeating: 0, count: chunkSize)
         while remaining > 0 {
+            // Büyük dosyanın tam özeti uzun sürer: her parçada iptal denetimi.
+            if Task.isCancelled { throw .cancelled }
             let want = min(chunkSize, remaining)
             let n = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, want) }
             if n < 0 {

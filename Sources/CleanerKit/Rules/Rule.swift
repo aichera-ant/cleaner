@@ -112,8 +112,15 @@ public struct RuleSet: Codable, Sendable {
             guard !r.path.split(separator: "/").contains(where: { $0 == ".." || $0 == "**" }) else {
                 throw LoadError.invalid("\(r.id): '..' ve '**' kullanılamaz")
             }
-            if case .command(let cmd) = r.method, cmd.trimmingCharacters(in: .whitespaces).isEmpty {
-                throw LoadError.invalid("\(r.id): boş komut")
+            if case .command(let cmd) = r.method {
+                // Komut kural id'sine bağlıdır: id, yol, kategori ve komut izin listesinde birlikte olmalı.
+                let allowed = CommandPolicy.ruleCommands.contains {
+                    $0.ruleID == r.id && $0.path == r.path && $0.category == r.category && $0.command == cmd
+                }
+                guard allowed else { throw LoadError.invalid("\(r.id): komut izin listesinde değil (\(cmd))") }
+                guard !PathExpander.hasGlob(Substring(r.path)) else {
+                    throw LoadError.invalid("\(r.id): komutlu kuralda glob kullanılamaz")
+                }
             }
         }
     }

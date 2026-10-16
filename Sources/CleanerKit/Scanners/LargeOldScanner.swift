@@ -5,12 +5,17 @@ import Foundation
 /// - Adaylar kural dışıdır: kırmızı, seçili değil (karar kullanıcıda). `~/Downloads` içindeki
 ///   `.dmg/.pkg/.zip` kurulum dosyaları sarıdır (yeniden indirilir).
 /// - `~/Library` gezilmez (diğer tarayıcıların alanı); yalnız `~/Library/Application Support` gezilir.
-/// - Kurallarla (`rules.json`) örtüşen yollar atlanır, böylece çift sayım olmaz.
+/// - Kurallarla (`rules.json`) ve diğer tarayıcıların öğeleriyle (`context.claimedPaths`) örtüşen yollar
+///   atlanır; onları kapsayan klasör aday olmaz, içindeki geri kalan büyük dosyalar ayrı öğe olur.
+/// - Listelenemeyen klasör atlanır; onu kapsayan klasör aday olmaz.
 /// - Seyrek dosya (görünen boyut büyük, ayrılan küçük) bilgi satırıdır, taşınamaz.
 /// - Boyut ön süzgeci `lstat` boyutudur; öğelerin ayrılan boyutu `SizeMeter` ile ölçülür.
 public struct LargeOldScanner: Cleaner {
     public let id = "largeOld"
     public var categories: Set<Category> { [.largeOld] }
+    /// İkinci aşama: diğer tarayıcıların öğeleri (`context.claimedPaths`) bilinerek çalışır; o yolları
+    /// saymaz ve onları kapsayan klasörü aday yapmaz (içindeki geri kalan büyük dosyalar ayrı öğe olur).
+    public var phase: Int { 1 }
 
     /// Büyük dosya eşiği (bayt).
     public let minFileBytes: UInt64
@@ -39,6 +44,8 @@ public struct LargeOldScanner: Cleaner {
         var children: [DirNode] = []
         var mass: UInt64 = 0
         var isGitRoot = false
+        /// Alt ağaçta başka tarayıcının öğesi ya da listelenemeyen klasör var: klasör adayı olamaz.
+        var notCandidate = false
         init(info: FSInfo) { self.info = info }
     }
 
@@ -68,8 +75,11 @@ public struct LargeOldScanner: Cleaner {
             }
         }
 
+        let claimed = context.claimedPaths
+        topDirs.removeAll { claimed.contains(PathUtil.key($0.path)) }
+        homeFiles.removeAll { claimed.contains(PathUtil.key($0.path)) }
         let nodes = try await boundedParallelMap(topDirs, width: 8) { dir in
-            try Self.build(dir, walker: walker, rootDev: rootDev, minBytes: minBytes)
+            try Self.build(dir, walker: walker, rootDev: rootDev, minBytes: minBytes, claimed: claimed)
         }
 
         var items: [CleanItem] = []
@@ -85,13 +95,24 @@ public struct LargeOldScanner: Cleaner {
 
     // MARK: - Ağaç kurma (yalnız meta veri)
 
-    private static func build(_ dir: FSInfo, walker: FileWalker, rootDev: dev_t, minBytes: Int64) throws -> DirNode? {
+    private static func build(_ dir: FSInfo, walker: FileWalker, rootDev: dev_t, minBytes: Int64,
+                              claimed: Set<String>) throws -> DirNode? {
         let node = DirNode(info: dir)
-        for child in try walker.children(of: dir, rootDev: rootDev) {
+        guard let children = try walker.listChildren(of: dir, rootDev: rootDev) else {
+            // Listelenemedi: içi bilinmiyor, atlanır; kapsayan klasör de aday olamaz.
+            node.notCandidate = true
+            return node
+        }
+        for child in children {
+            if !claimed.isEmpty, claimed.contains(PathUtil.key(child.path)) {
+                node.notCandidate = true // başka tarayıcının öğesi: sayılmaz, içine inilmez
+                continue
+            }
             if child.isDirectory {
-                if let sub = try build(child, walker: walker, rootDev: rootDev, minBytes: minBytes) {
+                if let sub = try build(child, walker: walker, rootDev: rootDev, minBytes: minBytes, claimed: claimed) {
                     node.children.append(sub)
                     node.mass &+= sub.mass
+                    if sub.notCandidate { node.notCandidate = true }
                 }
             } else if child.size >= minBytes {
                 node.files.append(BigFile(info: child))
@@ -100,7 +121,7 @@ public struct LargeOldScanner: Cleaner {
         }
         // `.git` bulunan klasör (git kökü): adaylık dışı, çocuklara bakılır.
         node.isGitRoot = FS.info(FS.join(dir.path, ".git")) != nil
-        return node.mass == 0 ? nil : node
+        return node.mass == 0 && !node.notCandidate ? nil : node
     }
 
     // MARK: - Aday seçimi
@@ -110,7 +131,7 @@ public struct LargeOldScanner: Cleaner {
         try context.checkCancellation()
         let protected = context.pathPolicy.protectionReason(for: node.info.url) != nil
         let dominantChild = node.children.contains { $0.mass * 10 >= node.mass * 8 }
-        if !protected, !node.isGitRoot, node.mass >= folderCandidateBytes, !dominantChild {
+        if !protected, !node.isGitRoot, !node.notCandidate, node.mass >= folderCandidateBytes, !dominantChild {
             // Görünen boyut seyrek dosyalardan şişmiş olabilir: ayrılan boyut da eşiği aşmalı.
             let item = try await folderItem(node, context: context)
             if item.allocatedBytes >= folderCandidateBytes {

@@ -125,6 +125,12 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     /// Öğeyle birlikte taşınan ek yollar (yalnız `apps`: bundle id ile tam eşleşen `~/Library` artıkları).
     /// Diğer kategorilerde nil; `Trasher` başka kategoride dolu gelirse öğeyi reddeder.
     public var relatedPaths: [String]?
+    /// `false`: risk yeşil olsa bile varsayılan seçimde değil (ör. 30 günden yeni proje artığı). nil/true: risk kuralı.
+    public var preselect: Bool?
+    /// Yalnız `duplicates`: aynı içerikli kopyaların grup kimliği.
+    public var groupID: String?
+    /// Yalnız `duplicates`: grubun tutulacak kopyasının yolu (bu öğenin kendisi de olabilir).
+    public var keeperPath: String?
 
     public init(
         category: Category,
@@ -136,7 +142,10 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         lockReason: String? = nil,
         note: String? = nil,
         method: CleanMethod = .trash,
-        relatedPaths: [String]? = nil
+        relatedPaths: [String]? = nil,
+        preselect: Bool? = nil,
+        groupID: String? = nil,
+        keeperPath: String? = nil
     ) {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         self.id = CleanItem.makeID(path: standardized)
@@ -151,14 +160,23 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         self.method = method
         let related = relatedPaths?.map { URL(fileURLWithPath: $0).standardizedFileURL.path } ?? []
         self.relatedPaths = related.isEmpty ? nil : related
+        self.preselect = preselect
+        self.groupID = groupID
+        self.keeperPath = keeperPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
     }
 
     public var url: URL { URL(fileURLWithPath: path) }
 
     public var isLocked: Bool { risk == .locked || lockReason != nil }
 
-    /// Varsayılan seçim: yalnız yeşil, kilitsiz ve temizlenebilir öğeler.
-    public var isDefaultSelected: Bool { risk == .green && !isLocked && method != .none }
+    /// Varsayılan seçim: yalnız yeşil, kilitsiz, temizlenebilir ve `preselect` ile kapatılmamış öğeler.
+    public var isDefaultSelected: Bool { risk == .green && !isLocked && method != .none && preselect != false }
+
+    /// Tutulacak mükerrer kopya mı?
+    public var isDuplicateKeeper: Bool { groupID != nil && keeperPath == path }
+
+    /// Öğenin diskte kapladığı yollar: kendi yolu + ilişkili yollar (uygulama artıkları).
+    public var footprint: [String] { [path] + (relatedPaths ?? []) }
 
     /// Aynı yol her taramada aynı id'yi verir: standart yolun SHA-256 özetinin ilk 12 hex karakteri.
     public static func makeID(path: String) -> String {

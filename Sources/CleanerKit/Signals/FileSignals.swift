@@ -67,6 +67,21 @@ public struct GitInfo: Sendable, Equatable {
     public var hasUniqueWork: Bool { isDirty || hasUnpushedCommits }
 }
 
+/// Bütün git çağrılarının ortak argümanları: depo ayarındaki fsmonitor komutu ve kancalar çalışmaz,
+/// isteğe bağlı kilit dosyaları yazılmaz. (Sistem ayarı `GIT_CONFIG_NOSYSTEM` ile `Signals.live`'da kapatılır.)
+public enum GitCommand {
+    public static let safetyArguments = [
+        "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "--no-optional-locks",
+    ]
+
+    public static func arguments(repo: String, _ args: [String]) -> [String] {
+        safetyArguments + ["-C", repo] + args
+    }
+
+    /// Git alt süreçleri için ortam: sistem ayarı okunmaz, parola sorulmaz.
+    public static let environment = ["GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"]
+}
+
 public protocol GitInfoProviding: Sendable {
     /// `repo` bir git çalışma ağacı değilse ya da git yoksa nil.
     func info(repo: URL) async -> GitInfo?
@@ -83,11 +98,9 @@ public struct LiveGitInfo: GitInfoProviding {
     }
 
     public func info(repo: URL) async -> GitInfo? {
-        if let cloudGuard, cloudGuard.isUnderCloudRoot(repo) { return nil }
-        let base = ["-C", repo.path]
-        // Kilit dosyası yazma, yerel ayar etkilemesin.
+        if let cloudGuard, !cloudGuard.isSafeForGit(repo) { return nil }
         func git(_ args: [String]) async -> CommandResult? {
-            await runner.run("git", ["-c", "core.fsmonitor=false"] + base + args, timeout: .seconds(20))
+            await runner.run("git", GitCommand.arguments(repo: repo.path, args), timeout: .seconds(20))
         }
         guard let top = await git(["rev-parse", "--is-inside-work-tree"]), top.succeeded,
               top.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
@@ -95,7 +108,7 @@ public struct LiveGitInfo: GitInfoProviding {
 
         let remote = await git(["remote", "get-url", "origin"])
         let roots = await git(["rev-list", "--max-parents=0", "HEAD"])
-        let status = await git(["--no-optional-locks", "status", "--porcelain"])
+        let status = await git(["status", "--porcelain"])
         let unpushed = await git(["rev-list", "--count", "--branches", "--not", "--remotes"])
 
         func trimmed(_ r: CommandResult?) -> String? {
@@ -137,7 +150,7 @@ public struct Signals: Sendable {
     }
 
     public static func live(cloudGuard: CloudGuard) -> Signals {
-        let runner = ProcessCommandRunner()
+        let runner = ProcessCommandRunner(environment: GitCommand.environment)
         return Signals(
             commands: runner,
             processes: LiveProcessLister(),

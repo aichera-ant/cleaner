@@ -57,6 +57,8 @@ public struct ProjectArtifactsScanner: Cleaner {
     struct GitContext {
         var info: GitInfo?
         var lastCommit: Date?
+        /// false: depo bulutta/dataless, git çalıştırılmadı.
+        var safe = true
     }
 
     /// Projeyi içeren en yakın `.git` sahibi klasör (yoksa nil).
@@ -73,14 +75,20 @@ public struct ProjectArtifactsScanner: Cleaner {
 
     private func gitContext(repo: URL, context: ScanContext, cache: inout [String: GitContext]) async -> GitContext {
         if let c = cache[repo.path] { return c }
+        // Bulut (iCloud/dataless) deposunda git çalıştırılmaz: git dosya içeriği okur.
+        guard context.cloudGuard.isSafeForGit(repo) else {
+            let c = GitContext(info: nil, lastCommit: nil, safe: false)
+            cache[repo.path] = c
+            return c
+        }
         let info = await context.signals.git.info(repo: repo)
         var last: Date?
         if info != nil, let r = await context.signals.commands.run(
-            "git", ["-C", repo.path, "log", "-1", "--format=%ct"], timeout: .seconds(10)
+            "git", GitCommand.arguments(repo: repo.path, ["log", "-1", "--format=%ct"]), timeout: .seconds(10)
         ), r.succeeded, let secs = TimeInterval(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) {
             last = Date(timeIntervalSince1970: secs)
         }
-        let c = GitContext(info: info, lastCommit: last)
+        let c = GitContext(info: info, lastCommit: last, safe: true)
         cache[repo.path] = c
         return c
     }
@@ -126,7 +134,10 @@ public struct ProjectArtifactsScanner: Cleaner {
             case .node: notes.append("Yeniden kurulur (npm/pnpm install).")
             case .cache: notes.append("Derleme önbelleği; yeniden oluşur.")
             case .output:
-                guard let state = await outputState(c.name, project: project, hasRepo: repo != nil, context: context) else { continue }
+                // Git çalıştırılamayan (bulut) depoda dist/build'in takipli olup olmadığı bilinemez: öğe olmaz.
+                guard git.safe,
+                      let state = await outputState(c.name, project: project, hasRepo: repo != nil, context: context)
+                else { continue }
                 switch state {
                 case .tracked: continue // git'te takipli: kullanıcı verisi, öğe olmaz
                 case .ignored: notes.append("Derleme çıktısı (git yok sayıyor); yeniden üretilir.")
@@ -135,8 +146,9 @@ public struct ProjectArtifactsScanner: Cleaner {
                     notes.append("Derleme çıktısı ama git yok sayma kuralı yok; kaynakta üretilemiyorsa kaybolur.")
                 }
             }
-            if ageDays < staleDays {
-                notes.append("Proje \(ageDays) gün önce etkindi (\(staleDays) günden yeni).")
+            let recent = ageDays < staleDays
+            if recent {
+                notes.append("Proje \(ageDays) gün önce etkindi (\(staleDays) günden yeni); varsayılan seçili değil.")
             }
             if let info = git.info, info.hasUniqueWork {
                 var why: [String] = []
@@ -154,7 +166,8 @@ public struct ProjectArtifactsScanner: Cleaner {
                 risk: risk,
                 dateSignal: .modified(days: ageDays),
                 lockReason: XcodeScanner.recentLock(m, context),
-                note: notes.joined(separator: " ")
+                note: notes.joined(separator: " "),
+                preselect: recent ? false : nil
             ))
         }
         return items
@@ -167,10 +180,10 @@ public struct ProjectArtifactsScanner: Cleaner {
     private func outputState(_ name: String, project: URL, hasRepo: Bool, context: ScanContext) async -> OutputState? {
         guard hasRepo else { return .ignored } // git yok: takip edilemez, package.json var
         let cmds = context.signals.commands
-        guard let ls = await cmds.run("git", ["-C", project.path, "ls-files", "--", name], timeout: .seconds(10)),
+        guard let ls = await cmds.run("git", GitCommand.arguments(repo: project.path, ["ls-files", "--", name]), timeout: .seconds(10)),
               ls.succeeded else { return nil }
         if !ls.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .tracked }
-        guard let ci = await cmds.run("git", ["-C", project.path, "check-ignore", "-q", "--", name], timeout: .seconds(10)),
+        guard let ci = await cmds.run("git", GitCommand.arguments(repo: project.path, ["check-ignore", "-q", "--", name]), timeout: .seconds(10)),
               !ci.timedOut else { return nil }
         return ci.exitCode == 0 ? .ignored : .untracked
     }

@@ -117,8 +117,8 @@
       "category": "caches",
       "risk": "green",
       "name": "Homebrew önbelleği",
-      "description": "İndirilen paket dosyaları; brew kendi komutuyla temizler, gerekirse yeniden indirir.",
-      "method": { "kind": "command", "command": "brew cleanup -s" },
+      "description": "Homebrew'un indirdiği paket dosyaları (yalnız önbellek klasörü Çöp Kutusu'na taşınır; kurulu paketlere ve eski sürümlere dokunulmaz). Gerekirse yeniden indirilir.",
+      "method": "trash",
       "locks": [{ "type": "modifiedWithin", "hours": 1 }]
     },
     {

@@ -214,9 +214,14 @@ struct ScanEngineTests {
         #expect(report.items.map(\.name) == ["büyük", "küçük"])
         #expect(report.dropped.count == 2)
         #expect(report.errors.map(\.scanner) == ["c"])
+        // Varsayılan: kategori süzgeci verilse de bütün tarayıcılar çalışır (kilit hesabı tam).
         let onlyX = try await ScanEngine(registry: r).scan(.test(t), categories: [.xcode])
         #expect(onlyX.items.map(\.name) == ["büyük"])
-        #expect(onlyX.errors.isEmpty)
+        #expect(onlyX.errors.map(\.scanner) == ["c"])
+        // Hızlı görüntüleme: yalnız ilgili tarayıcılar.
+        let fast = try await ScanEngine(registry: r).scan(.test(t), categories: [.xcode], fullLockCheck: false)
+        #expect(fast.items.map(\.name) == ["büyük"])
+        #expect(fast.errors.isEmpty)
     }
 
     @Test("varsayılan kayıt kural tarayıcısını içerir")

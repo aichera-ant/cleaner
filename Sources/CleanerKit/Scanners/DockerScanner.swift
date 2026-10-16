@@ -28,17 +28,20 @@ public struct DockerScanner: Cleaner {
         var items: [CleanItem] = []
         for row in Self.jsonLines(ps.stdout) {
             try context.checkCancellation()
-            guard let id = row["ID"] as? String, Self.isSafeToken(id) else { continue }
+            guard let id = row["ID"] as? String, Self.isSafeToken(id), CommandPolicy.isHex(id) else { continue }
             let name = (row["Names"] as? String) ?? id
             let state = (row["State"] as? String) ?? ""
             let size = Self.parseSize((row["Size"] as? String)?.split(separator: " ").first.map(String.init) ?? "")
             let running = state == "running" || state == "restarting" || state == "paused"
+            // Durmuş container sarı ve seçili değil: yazılabilir katmanında (container içinde yazılan dosyalar)
+            // veri olabilir ve `docker rm` kalıcı siler.
             items.append(CleanItem(
-                category: .docker, name: "Container: \(name)", path: "/docker/container/\(id)",
-                allocatedBytes: size, risk: running ? .locked : .green,
+                category: .docker, name: "Container: \(name)", path: CommandPolicy.dockerPath(.container, id),
+                allocatedBytes: size, risk: running ? .locked : .yellow,
                 lockReason: running ? "container çalışıyor (\(state))" : nil,
-                note: running ? nil : "Durmuş container (\(row["Status"] as? String ?? state)); yazılabilir katmanı silinir, imaj kalır.",
-                method: .command("docker rm \(id)")
+                note: running ? nil : "Durmuş container (\(row["Status"] as? String ?? state)); kalıcı silinir (Çöp Kutusu'na gitmez). Container içinde yazılmış dosyalar (yazılabilir katman) varsa onlar da gider; imaj kalır.",
+                method: .command(CommandPolicy.dockerCommand(.container, id)),
+                preselect: false
             ))
         }
 
@@ -52,16 +55,16 @@ public struct DockerScanner: Cleaner {
             guard (img["Containers"] as? String) == "0" else { continue }
             guard let rawID = img["ID"] as? String else { continue }
             let id = rawID.replacingOccurrences(of: "sha256:", with: "")
-            guard Self.isSafeToken(id) else { continue }
+            guard Self.isSafeToken(id), CommandPolicy.isHex(id) else { continue }
             let repo = (img["Repository"] as? String) ?? "<none>"
             let tag = (img["Tag"] as? String) ?? ""
             let ref = tag.isEmpty || tag == "<none>" ? repo : "\(repo):\(tag)"
             let size = Self.parseSize((img["UniqueSize"] as? String).flatMap { $0 == "N/A" ? nil : $0 } ?? (img["Size"] as? String) ?? "")
             items.append(CleanItem(
-                category: .docker, name: "İmaj: \(ref)", path: "/docker/image/\(id)",
+                category: .docker, name: "İmaj: \(ref)", path: CommandPolicy.dockerPath(.image, id),
                 allocatedBytes: size, risk: .yellow,
                 note: "Hiçbir container kullanmıyor; gerektiğinde yeniden indirilir.",
-                method: .command("docker rmi \(id)")
+                method: .command(CommandPolicy.dockerCommand(.image, id))
             ))
         }
 
@@ -76,9 +79,9 @@ public struct DockerScanner: Cleaner {
                 guard let name = row["Name"] as? String, Self.isSafeToken(name) else { continue }
                 items.append(CleanItem(
                     category: .docker, name: "Volume: \(name.count > 24 ? String(name.prefix(12)) + "…" : name)",
-                    path: "/docker/volume/\(name)", allocatedBytes: sizes[name] ?? 0, risk: .red,
+                    path: CommandPolicy.dockerPath(.volume, name), allocatedBytes: sizes[name] ?? 0, risk: .red,
                     note: "Hiçbir container'a bağlı değil ama veritabanı gibi veri içerebilir; silinince geri gelmez.",
-                    method: .command("docker volume rm \(name)")
+                    method: .command(CommandPolicy.dockerCommand(.volume, name))
                 ))
             }
         }
@@ -89,11 +92,11 @@ public struct DockerScanner: Cleaner {
         if !cache.isEmpty {
             let inUse = cache.contains { ($0["InUse"] as? Bool) == true || ($0["InUse"] as? String) == "true" }
             items.append(CleanItem(
-                category: .docker, name: "Docker build cache", path: "/docker/build-cache",
+                category: .docker, name: "Docker build cache", path: CommandPolicy.dockerBuildCachePath,
                 allocatedBytes: cacheBytes, risk: .green,
                 lockReason: inUse ? "derleme sürüyor" : nil,
                 note: "İmaj derleme önbelleği; sonraki derleme daha yavaş olur.",
-                method: .command("docker builder prune -f")
+                method: .command(CommandPolicy.dockerBuildCacheCommand)
             ))
         }
         return items

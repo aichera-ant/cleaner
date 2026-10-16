@@ -37,7 +37,13 @@ enum FS {
     }
 
     static func names(in dir: String) -> [String] {
-        (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        listing(dir) ?? []
+    }
+
+    /// Klasör listesi; listelenemezse (izin, G/Ç hatası) nil. "Boş" ile "okunamadı" ayrımı gereken
+    /// yerlerde bu kullanılır.
+    static func listing(_ dir: String) -> [String]? {
+        try? FileManager.default.contentsOfDirectory(atPath: dir)
     }
 
     static func join(_ dir: String, _ name: String) -> String {
@@ -77,11 +83,17 @@ struct FileWalker: Sendable {
 
     /// `dir` klasörünün gezilmesi uygun çocukları: normal dosyalar ve inilebilir klasörler.
     func children(of dir: FSInfo, rootDev: dev_t) throws -> [FSInfo] {
+        try listChildren(of: dir, rootDev: rootDev) ?? []
+    }
+
+    /// `children` gibi; klasör listelenemezse nil (atlanır, "boş" sayılmaz).
+    func listChildren(of dir: FSInfo, rootDev: dev_t) throws -> [FSInfo]? {
         try Task.checkCancellation()
         guard dir.isDirectory, !dir.isDataless else { return [] }
         if cloudGuard.isUnderCloudRoot(dir.url) { return [] }
+        guard let names = FS.listing(dir.path) else { return nil }
         var out: [FSInfo] = []
-        for name in FS.names(in: dir.path) {
+        for name in names {
             let path = FS.join(dir.path, name)
             if skipPaths.contains(path) { continue }
             guard let info = FS.info(path), !info.isSymlink, !info.isDataless else { continue }

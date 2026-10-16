@@ -75,6 +75,8 @@ public struct ProcessCommandRunner: CommandRunning {
         var out = Data()
         var err = Data()
         var timedOut = false
+        /// Süreç bitti ve toplandı: bundan sonra pid'e sinyal gönderilmez (pid yeniden kullanılmış olabilir).
+        var exited = false
     }
 
     private static func executeBlocking(executable: String, arguments: [String], environment: [String: String]?, timeout: Duration) -> CommandResult? {
@@ -109,17 +111,27 @@ public struct ProcessCommandRunner: CommandRunning {
         }
 
         let pid = process.processIdentifier
+        // Sinyal yalnız süreç henüz toplanmamışken ve kilit altında gönderilir: `waitUntilExit` sonrası
+        // `exited` true olur, gecikmiş SIGKILL yeniden kullanılmış bir pid'e gitmez.
+        func signal(_ sig: Int32, markTimeout: Bool) {
+            box.lock.lock(); defer { box.lock.unlock() }
+            guard !box.exited else { return }
+            if markTimeout { box.timedOut = true }
+            kill(pid, sig)
+        }
+        let killer = DispatchWorkItem { signal(SIGKILL, markTimeout: false) }
         let timer = DispatchWorkItem {
-            box.lock.lock(); box.timedOut = true; box.lock.unlock()
-            kill(pid, SIGTERM)
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { kill(pid, SIGKILL) }
+            signal(SIGTERM, markTimeout: true)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: killer)
         }
         let comps = timeout.components
         let seconds = Double(comps.seconds) + Double(comps.attoseconds) / 1e18
         DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: timer)
 
         process.waitUntilExit()
+        box.lock.lock(); box.exited = true; box.lock.unlock()
         timer.cancel()
+        killer.cancel()
         // Torun süreç boruyu açık tutarsa sonsuza dek beklememek için sınırlı bekle.
         _ = group.wait(timeout: .now() + 5)
 

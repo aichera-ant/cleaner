@@ -61,30 +61,38 @@ struct DuplicatesScannerTests {
         let dup = try #require(items.first { $0.path.hasSuffix("Downloads/rapor.pdf") })
         #expect(dup.risk == .green && dup.isDefaultSelected)
         #expect(dup.note?.contains("Aynısı duruyor") == true)
-        // Aynı grup anahtarı iki satırda da.
-        let tag = try #require(keeper.note?.split(separator: " ").first)
-        #expect(dup.note?.hasPrefix(String(tag)) == true)
+        // Grup bilgisi modelde: aynı grup, aynı tutulacak kopya; not öneki yok.
+        #expect(keeper.groupID != nil && dup.groupID == keeper.groupID)
+        #expect(keeper.keeperPath == keeper.path && dup.keeperPath == keeper.path)
+        #expect(keeper.isDuplicateKeeper && !dup.isDuplicateKeeper)
+        #expect(dup.note?.hasPrefix("grup:") == false && keeper.note?.hasPrefix("grup:") == false)
     }
 
-    @Test("aynı klasörde en kısa ad tutulur; eşitse en eski")
-    func keeperShortestThenOldest() async throws {
+    @Test("aynı klasörde en eski tutulur; tarih eşitse en kısa ad")
+    func keeperOldestThenShortest() async throws {
+        // Gerçek örnek: odaglan.png en eski (asıl), evrak.png ve uzun adlı kopya sonradan.
         let t = try TempTree()
         let long = try write(t, "Downloads/odaglan 2 uzun ad.png", bytes(7, 3000))
-        let short = try write(t, "Downloads/odaglan.png", bytes(7, 3000))
+        let original = try write(t, "Downloads/odaglan.png", bytes(7, 3000))
         let evrak = try write(t, "Downloads/evrak.png", bytes(7, 3000))
-        // evrak ile odaglan'dan en eskisi evrak; ikisi de 10 değil -> evrak (6 harf) < odaglan (7 harf)
-        _ = (long, short)
+        let fm = FileManager.default
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000_000)], ofItemAtPath: original.path)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 2_000_000)], ofItemAtPath: evrak.path)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3_000_000)], ofItemAtPath: long.path)
         let items = try await dupScanner().scan(ctx(t))
         #expect(items.count == 3)
-        #expect(items.first { $0.risk == .info }?.path.hasSuffix("evrak.png") == true)
-        // Eşit uzunlukta: en eski kalır.
+        #expect(items.first { $0.risk == .info }?.path.hasSuffix("odaglan.png") == true)
+        #expect(items.allSatisfy { $0.keeperPath?.hasSuffix("/odaglan.png") == true })
+
+        // Tarih eşit: en kısa ad kalır.
         let t2 = try TempTree()
-        let x = try write(t2, "Downloads/aaa.bin", bytes(3, 3000))
-        let y = try write(t2, "Downloads/bbb.bin", bytes(3, 3000))
-        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: y.path)
-        _ = x
+        let x = try write(t2, "Downloads/aaaa.bin", bytes(3, 3000))
+        let y = try write(t2, "Downloads/bb.bin", bytes(3, 3000))
+        for u in [x, y] {
+            try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 5_000)], ofItemAtPath: u.path)
+        }
         let items2 = try await dupScanner().scan(ctx(t2))
-        #expect(items2.first { $0.risk == .info }?.path.hasSuffix("bbb.bin") == true)
+        #expect(items2.first { $0.risk == .info }?.path.hasSuffix("bb.bin") == true)
     }
 
     @Test("git'te takipli kopya kilitli; Müzik ve uygulama verisi sarı ve seçili değil")

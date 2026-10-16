@@ -100,6 +100,19 @@ public struct CloudGuard: Sendable {
         do { try checkContentReadable(url); return true } catch { return false }
     }
 
+    /// Bu klasörde git çalıştırmak güvenli mi? Git dosya içeriği okur (status, ls-files); alt süreç
+    /// `IOPOL_MATERIALIZE_DATALESS_FILES_OFF` ayarını devralsa da (denendi: posix_spawn ve fork+exec devralır)
+    /// bulut deposunda git hiç çalıştırılmaz. Güvensiz: bulut kökü altı, iCloud öğesi, kök ya da `.git` dataless.
+    public func isSafeForGit(_ repo: URL) -> Bool {
+        if isUnderCloudRoot(repo) { return false }
+        let git = repo.appending(path: ".git")
+        for u in [repo, git] {
+            if probes.isDataless(u) { return false }
+            if probes.isDownloadedCurrent(u) != nil { return false } // iCloud (ubiquitous) öğesi
+        }
+        return true
+    }
+
     /// `lstat` ile `SF_DATALESS` bayrağı. Bağlantı izlenmez, içerik okunmaz.
     public static func hasDatalessFlag(path: String) -> Bool {
         var st = stat()

@@ -52,7 +52,7 @@ public struct AppsScanner: Cleaner {
         let processes = context.signals.processes
         let running = RunningApps(processes: processes.runningProcesses(), reader: reader)
         let cliLinks = Self.cliLinks(in: binDirectories ?? Self.defaultBinDirectories(home: context.home))
-        var items: [CleanItem] = []
+        var found: [(bundle: URL, info: AppBundleInfo)] = []
         var seen = Set<String>()
 
         for root in policy.appRoots {
@@ -71,19 +71,48 @@ public struct AppsScanner: Cleaner {
                 guard let info = AppBundleInfo.read(bundle, reader: reader), !info.isApple else { continue }
                 let key = PathUtil.key(PathUtil.canonical(bundle))
                 guard seen.insert(key).inserted else { continue }
-                if let item = try await makeItem(bundle: bundle, info: info, context: context, running: running,
-                                                 cliLinks: cliLinks) {
-                    items.append(item)
-                }
+                found.append((bundle, info))
+            }
+        }
+        // Aynı bundle id'yi taşıyan birden çok kopya: artıklar ortaktır, hiçbirine eklenmez.
+        var byID: [String: [URL]] = [:]
+        for f in found { byID[f.info.bundleID.lowercased(), default: []].append(f.bundle) }
+        var items: [CleanItem] = []
+        for f in found {
+            try context.checkCancellation()
+            let twins = (byID[f.info.bundleID.lowercased()] ?? []).filter { $0 != f.bundle }
+            if let item = try await makeItem(bundle: f.bundle, info: f.info, context: context, running: running,
+                                             cliLinks: cliLinks, sharedWith: twins) {
+                items.append(item)
             }
         }
         return items
     }
 
+    /// Uygulama köklerinde aynı bundle id'yi taşıyan başka `.app` paketleri (`excluding` hariç).
+    static func otherBundles(withID bundleID: String, excluding: URL, appRoots: [URL], reader: SafeReader) -> [URL] {
+        let fm = FileManager.default
+        let own = PathUtil.key(PathUtil.canonical(excluding))
+        var out: [URL] = []
+        for root in appRoots {
+            guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { continue }
+            for name in names.sorted() where name.lowercased().hasSuffix(".app") && !name.hasPrefix(".") {
+                let bundle = root.appending(path: name, directoryHint: .notDirectory)
+                guard PathUtil.key(PathUtil.canonical(bundle)) != own else { continue }
+                var st = stat()
+                guard lstat(bundle.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+                if let id = AppBundleInfo.readBundleID(bundle, reader: reader), id.lowercased() == bundleID.lowercased() {
+                    out.append(bundle)
+                }
+            }
+        }
+        return out
+    }
+
     func makeItem(bundle: URL, info: AppBundleInfo, context: ScanContext, running: RunningApps,
-                  cliLinks: [(link: String, target: String)]) async throws -> CleanItem? {
+                  cliLinks: [(link: String, target: String)], sharedWith twins: [URL] = []) async throws -> CleanItem? {
         let policy = context.pathPolicy
-        let leftovers = Self.leftovers(bundleID: info.bundleID, context: context)
+        let leftovers = twins.isEmpty ? Self.leftovers(bundleID: info.bundleID, context: context) : []
         let sizes = try await context.sizeMeter.measure([bundle] + leftovers.map(\.url))
         let total = sizes.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }
 
@@ -124,6 +153,9 @@ public struct AppsScanner: Cleaner {
         if !leftovers.isEmpty {
             let groups = Array(Set(leftovers.map { ($0.parent as NSString).lastPathComponent })).sorted()
             notes.append("artıklar (\(leftovers.count)): \(groups.joined(separator: ", "))")
+        }
+        if !twins.isEmpty {
+            notes.append("aynı bundle id'li başka kopya kurulu (\(twins.map(\.path).joined(separator: ", "))); artıklar ortak olduğu için eklenmedi")
         }
         if info.isAppStore { notes.append("App Store'dan kurulmuş") }
         if !info.uninstallerHints.isEmpty {

@@ -4,8 +4,8 @@ import Foundation
 ///
 /// - İçerik YALNIZ `context.safeReader` ile okunur; bulut kökleri hiç gezilmez, dataless dosya listelenmez.
 /// - Yeniden oluşan klasörler, paketler ve uygulama iç yapıları hariçtir.
-/// - Her grupta bir "tutulacak" kopya vardır (`.info`, taşınamaz). Grup anahtarı not başında `grup:<anahtar>`
-///   olarak yer alır; model değiştirilmedi.
+/// - Her grupta bir "tutulacak" kopya vardır (`.info`, taşınamaz). Grup `groupID`, tutulacak kopya `keeperPath`
+///   alanındadır; `Trasher` tutulacak kopyayı taşımaz ve bir grubun son kopyasını bırakmaz.
 /// - Tutulacak olmayan kopyalar: yeşil ve seçili ("Aynısı duruyor"); git'te takipli kilitli;
 ///   Müzik/Fotoğraflar arşivi ve uygulama verisi sarı (seçili değil).
 /// - Tutulacak kopyanın `allocatedBytes` değeri 0'dır (kazanç sayılmaz); boyutu notta yazar.
@@ -115,11 +115,8 @@ public struct DuplicatesScanner: Cleaner {
 
     private func collect(context: ScanContext, walker: FileWalker) async throws -> [Candidate] {
         let min = Int64(minBytes)
-        var roots = context.roots
-        // Varsayılan kökler (projeler + Desktop) mükerrer için dar: ana klasörün tamamı gezilir.
-        if Set(roots.map { $0.standardizedFileURL.path }) == Set(ScanContext.defaultRoots(home: context.home).map { $0.standardizedFileURL.path }) {
-            roots = [context.home]
-        }
+        // Kök verilmemişse mükerrerin varsayılanı ana klasörün tamamıdır (projeler + Desktop dar kalır).
+        let roots = context.roots(default: [context.home])
         var tops: [(FSInfo, dev_t)] = []
         var direct: [FSInfo] = []
         for root in roots {
@@ -180,8 +177,12 @@ public struct DuplicatesScanner: Cleaner {
         var tracked = Set<String>()
         for (root, paths) in byRepo.sorted(by: { $0.key < $1.key }) {
             try context.checkCancellation()
+            guard context.cloudGuard.isSafeForGit(URL(fileURLWithPath: root)) else {
+                tracked.formUnion(paths) // bulut deposunda git çalıştırılmaz; temkinli
+                continue
+            }
             let result = await context.signals.commands.run(
-                "git", ["-c", "core.fsmonitor=false", "-C", root, "ls-files", "-z"], timeout: .seconds(60)
+                "git", GitCommand.arguments(repo: root, ["ls-files", "-z"]), timeout: .seconds(60)
             )
             guard let result, result.succeeded else {
                 tracked.formUnion(paths) // temkinli
@@ -214,6 +215,18 @@ public struct DuplicatesScanner: Cleaner {
         }
     }
 
+    /// Tutulacak kopya sırası: konum (proje/Belgeler > Masaüstü > diğer > İndirilenler > arşiv > uygulama verisi),
+    /// sonra en eski değişiklik tarihi (saniye), sonra en kısa ad, sonra yol. Kopyalar çoğu zaman sonradan
+    /// oluşur; en eski olan asıl dosyadır (ör. `odaglan.png` ile sonradan inen `evrak.png`).
+    static func keeperOrder(_ a: Candidate, _ b: Candidate, la: Int, lb: Int) -> Bool {
+        if la != lb { return la < lb }
+        let (ta, tb) = (a.mtime.rounded(.down), b.mtime.rounded(.down))
+        if ta != tb { return ta < tb }
+        let (na, nb) = ((a.path as NSString).lastPathComponent, (b.path as NSString).lastPathComponent)
+        if na.count != nb.count { return na.count < nb.count }
+        return a.path < b.path
+    }
+
     private func makeItems(_ group: Group, tracked: Set<String>, context: ScanContext) async throws -> [CleanItem] {
         let home = PathUtil.canonicalDirectory(context.home)
         let homeAlt = context.home.standardizedFileURL.path
@@ -225,15 +238,9 @@ public struct DuplicatesScanner: Cleaner {
             return l
         }
         let ranked = group.members.sorted { a, b in
-            let (la, lb) = (loc(a).rawValue, loc(b).rawValue)
-            if la != lb { return la < lb }
-            let (na, nb) = ((a.path as NSString).lastPathComponent, (b.path as NSString).lastPathComponent)
-            if na.count != nb.count { return na.count < nb.count }
-            if a.mtime != b.mtime { return a.mtime < b.mtime }
-            return a.path < b.path
+            Self.keeperOrder(a, b, la: loc(a).rawValue, lb: loc(b).rawValue)
         }
         let keeper = ranked[0]
-        let tag = "grup:\(group.key)"
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(group.size), countStyle: .file)
         var items: [CleanItem] = []
         items.append(CleanItem(
@@ -243,15 +250,17 @@ public struct DuplicatesScanner: Cleaner {
             allocatedBytes: 0,
             risk: .info,
             dateSignal: context.signals.dateSignal(for: URL(fileURLWithPath: keeper.path), now: context.now),
-            note: "\(tag) · Tutulacak kopya (\(group.members.count) kopyadan biri, \(sizeText)).",
-            method: .none
+            note: "Tutulacak kopya (\(group.members.count) kopyadan biri, \(sizeText)).",
+            method: .none,
+            groupID: group.key,
+            keeperPath: keeper.path
         ))
         for c in ranked.dropFirst() {
             try context.checkCancellation()
             let url = URL(fileURLWithPath: c.path)
             let m = try await context.sizeMeter.measure(url)
             let l = loc(c)
-            let base = "\(tag) · Aynısı duruyor: \(keeper.path)"
+            let base = "Aynısı duruyor: \(keeper.path)"
             var risk = Risk.green
             var lock: String?
             var note = base
@@ -275,7 +284,9 @@ public struct DuplicatesScanner: Cleaner {
                 dateSignal: context.signals.dateSignal(for: url, now: context.now),
                 lockReason: lock,
                 note: note,
-                method: .trash
+                method: .trash,
+                groupID: group.key,
+                keeperPath: keeper.path
             ))
         }
         return items
