@@ -374,6 +374,32 @@ private func freshDefaults() -> UserDefaults {
         #expect(r.monitor.weeklySummary != nil)
     }
 
+    @Test("haftalık tarama sürerken örnekleme sürer; ikinci tarama başlamaz; stop() taramayı iptal eder")
+    func weeklyDoesNotBlock() async {
+        let scan = SlowScan()
+        let clock = Box(at(hours: 0))
+        let avail = Box(200 * GB)
+        let defaults = freshDefaults()
+        let prefs = BackgroundPreferences(defaults: defaults)
+        let m = BackgroundMonitor(prefs: prefs, notifier: FakeNotifier(), weeklyScan: scan,
+                                  diskProvider: { DiskInfo(totalBytes: 500 * GB, availableBytes: avail.value) },
+                                  now: { clock.value }, calendar: utc, defaults: defaults)
+        await m.tick(awaitWeekly: false)        // haftalık zamanlanır
+        clock.value = at(hours: 7 * 24)
+        await m.tick(awaitWeekly: false)        // tarama ayrı görevde başlar, tick döner
+        for _ in 0..<200 where !scan.started { try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(scan.started)
+        avail.value = 30 * GB
+        clock.value = at(hours: 7 * 24 + 1)
+        await m.tick(awaitWeekly: false)        // tarama sürerken örnekleme/etiket güncellenir
+        #expect(m.menuTitle == "30 GB")
+        #expect(scan.calls == 1)
+        m.stop()
+        await m.waitForWeekly()
+        #expect(scan.cancelled)
+        #expect(m.weeklySummary == nil)
+    }
+
     @Test("disk okunamazsa tick sessizce döner")
     func noDisk() async {
         let prefs = BackgroundPreferences(defaults: freshDefaults())
@@ -421,16 +447,33 @@ private func freshDefaults() -> UserDefaults {
         #expect(Fmt.shortBytes(0) == "0 MB")
     }
 
-    @Test("hafif tarama: ağır tarayıcılar çıkarılmış, diğerleri duruyor")
+    @Test("hafif tarama: yalnız izin listesindeki tarayıcılar çalışır")
     func lightRegistry() {
         let ids = Set(LightScanService.lightRegistry().cleaners.map(\.id))
-        let all = Set(CleanerRegistry.makeDefault().cleaners.map(\.id))
-        #expect(!ids.contains("duplicates") && !ids.contains("largeOld"))
-        #expect(all.subtracting(ids) == ["duplicates", "largeOld"])
+        #expect(ids == ["rules", "xcode", "oldVersions", "docker"])
+        for banned in ["projectArtifacts", "folders", "apps", "duplicates", "largeOld"] { #expect(!ids.contains(banned)) }
     }
 }
 
 // MARK: Oturum açılışı
+
+final class SlowScan: ScanService, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _started = false, _cancelled = false, _calls = 0
+    var started: Bool { lock.withLock { _started } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
+    var calls: Int { lock.withLock { _calls } }
+    private func markStart() { lock.withLock { _started = true; _calls += 1 } }
+    private func markCancel() { lock.withLock { _cancelled = true } }
+    func scan(progress: (@Sendable (AppScanProgress) -> Void)?) async throws -> ScanSnapshot {
+        markStart()
+        do { try await Task.sleep(for: .seconds(60)) } catch {
+            markCancel()
+            throw error
+        }
+        return ScanSnapshot(items: [], scannedAt: Date())
+    }
+}
 
 final class FakeLogin: LoginItemControlling, @unchecked Sendable {
     private let lock = NSLock()
@@ -507,5 +550,35 @@ final class FakeLogin: LoginItemControlling, @unchecked Sendable {
         p.settings.launchAtLogin = false
         m.setEnabled(false)
         #expect(f.status == .notRegistered && m.status == .notRegistered && p.settings.launchAtLogin == false)
+    }
+
+    @Test("ayar gerçek durumla eşlenir: kayıtlı değilse kapalı, kullanıcı kapattıysa yeniden kayıt yok")
+    func syncsWithRealStatus() {
+        let d = freshDefaults()
+        let (m, f, p) = make(defaults: d)
+        m.bootstrap()
+        #expect(p.settings.launchAtLogin && f.registerCalls == 1)
+        f.setStatus(.notRegistered) // Sistem Ayarları'ndan kapatıldı
+        m.refresh()
+        #expect(!p.settings.launchAtLogin && f.registerCalls == 1)
+        let (m2, f2, p2) = make(f, defaults: d)
+        m2.bootstrap()
+        #expect(!p2.settings.launchAtLogin && f2.registerCalls == 1 && m2.status == .notRegistered)
+        f.setStatus(.notFound)
+        m2.refresh()
+        #expect(!p2.settings.launchAtLogin)
+    }
+
+    @Test("onay bekliyor ayrı durum: açık görünür ama etkin değil")
+    func pendingApprovalState() {
+        let f = FakeLogin()
+        let (m, _, p) = make(f)
+        m.bootstrap()
+        f.setStatus(.requiresApproval)
+        m.refresh()
+        #expect(m.isPendingApproval && m.status != .enabled && p.settings.launchAtLogin)
+        f.setStatus(.enabled)
+        m.refresh()
+        #expect(!m.isPendingApproval && m.message == nil)
     }
 }

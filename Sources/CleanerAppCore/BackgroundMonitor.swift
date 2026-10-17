@@ -42,6 +42,7 @@ public final class BackgroundMonitor {
     private let calendar: Calendar
     private let defaults: UserDefaults
     @ObservationIgnored private var ticking = false
+    @ObservationIgnored private var weeklyTask: Task<Void, Never>?
     @ObservationIgnored private var scheduler: NSBackgroundActivityScheduler?
     @ObservationIgnored private var labelTimer: Timer?
 
@@ -81,7 +82,7 @@ public final class BackgroundMonitor {
         s.schedule { [weak self] completion in
             let done = UnsafeSendable(completion)
             Task { @MainActor [weak self] in
-                await self?.tick()
+                await self?.tick(awaitWeekly: false)
                 done.value(.finished)
             }
         }
@@ -92,10 +93,11 @@ public final class BackgroundMonitor {
         t.tolerance = 30
         RunLoop.main.add(t, forMode: .common)
         labelTimer = t
-        Task { await tick() }
+        Task { await tick(awaitWeekly: false) }
     }
 
     public func stop() {
+        weeklyTask?.cancel()
         scheduler?.invalidate()
         scheduler = nil
         labelTimer?.invalidate()
@@ -106,8 +108,10 @@ public final class BackgroundMonitor {
 
     // MARK: Örnekleme
 
-    /// Bir örnek alır, uyarıları değerlendirir, gerekirse haftalık taramayı yapar.
-    public func tick() async {
+    /// Bir örnek alır, uyarıları değerlendirir, gerekirse haftalık taramayı başlatır. Tarama ayrı görevde,
+    /// düşük öncelikle çalışır; örnekleme ve uyarılar onu (ya da bildirim iznini) beklemez. `awaitWeekly` true ise
+    /// süren haftalık görev bitene kadar beklenir (testler için).
+    public func tick(awaitWeekly: Bool = true) async {
         guard !ticking else { return }
         ticking = true
         defer { ticking = false }
@@ -120,10 +124,16 @@ public final class BackgroundMonitor {
                                                 state: state, now: date, calendar: calendar)
         setState(decision.state)
         for alert in decision.alerts { await send(alert) }
-        await weeklyIfDue(date)
+        weeklyIfDue(date)
+        if awaitWeekly { await waitForWeekly() }
     }
 
-    private func weeklyIfDue(_ date: Date) async {
+    /// Süren haftalık tarama görevi bitene kadar bekler.
+    public func waitForWeekly() async { await weeklyTask?.value }
+
+    private func weeklyIfDue(_ date: Date) {
+        // Aynı anda tek tarama.
+        guard weeklyTask == nil else { return }
         switch AlertEngine.weeklyAction(settings: prefs.settings, state: state, now: date) {
         case .wait: return
         case .schedule:
@@ -135,8 +145,17 @@ public final class BackgroundMonitor {
             var s = state
             s.weeklyAttempt = date
             setState(s)
+            weeklyTask = Task(priority: .utility) { [weak self] in
+                await self?.runWeekly()
+                self?.weeklyTask = nil
+            }
+        }
+    }
+
+    private func runWeekly() async {
             do {
                 let snap = try await weeklyScan.scan(progress: nil)
+                if Task.isCancelled { return }
                 let bytes = Summaries.cleanableBytes(snap.items, selection: SelectionState(defaultsFrom: snap.items))
                 weeklySummary = ScanSummary(date: snap.scannedAt, cleanableBytes: bytes)
                 var done = state
@@ -148,9 +167,8 @@ public final class BackgroundMonitor {
                     await send(alert)
                 }
             } catch {
-                // Başarısız: weeklyAttempt kalır, 6 saat sonra yeniden denenir.
+                // Başarısız ya da iptal: weeklyAttempt kalır, 6 saat sonra yeniden denenir.
             }
-        }
     }
 
     private func send(_ alert: NotificationAlert) async {

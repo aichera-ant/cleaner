@@ -72,13 +72,17 @@ public final class LoginItemModel {
     public func setEnabled(_ on: Bool) {
         _ = apply(enabled: on)
         refresh()
-        let actual = status == .enabled || status == .requiresApproval
-        if prefs.settings.launchAtLogin != actual { prefs.settings.launchAtLogin = actual }
     }
 
-    /// Sistem Ayarları'ndan değişmiş olabilir.
+    /// Kayıtlı ama kullanıcı onayı bekliyor (anahtar açık görünür, açıklama gösterilir).
+    public var isPendingApproval: Bool { status == .requiresApproval }
+
+    /// Sistem Ayarları'ndan değişmiş olabilir. `launchAtLogin` ayarı gerçek duruma eşlenir: kayıtlı değilse kapalı,
+    /// etkin ya da onay bekliyorsa açık. Kapalıyken kendiliğinden yeniden kayıt yapılmaz.
     public func refresh() {
         status = controller.status
+        let actual = status == .enabled || status == .requiresApproval
+        if prefs.settings.launchAtLogin != actual { prefs.settings.launchAtLogin = actual }
         if status == .requiresApproval {
             message = "Sistem Ayarları > Genel > Açılış Öğeleri'nde Cleaner'a izin vermen gerekiyor."
         } else if message?.hasPrefix("Sistem Ayarları") == true {

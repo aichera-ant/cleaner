@@ -40,7 +40,7 @@ struct SettingsView: View {
                 Toggle("Haftalık özet", isOn: $prefs.settings.weeklyEnabled)
                 if prefs.settings.weeklyEnabled {
                     Stepper("En az \(prefs.settings.weeklyMinGB) GB temizlenebilirse", value: $prefs.settings.weeklyMinGB, in: 1...2000)
-                    note("Haftada bir arka planda hafif bir tarama yapılır; mükerrer ve büyük dosya taraması yapılmaz.")
+                    note("Haftada bir arka planda önbellekler, Xcode, eski sürümler ve Docker taranır.")
                 }
                 if monitor.notificationsDenied {
                     HStack(alignment: .firstTextBaseline) {
