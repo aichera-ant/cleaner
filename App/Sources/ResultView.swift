@@ -29,8 +29,11 @@ struct ResultView: View {
                     }
                     .foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
 
-                    if !o.refused.isEmpty {
-                        section("Reddedilenler · \(o.refused.count)", tint: Theme.bad, lines: o.refused)
+                    if !o.refusedOther.isEmpty {
+                        section("Reddedilenler · \(o.refusedOther.count)", tint: Theme.bad, lines: o.refusedOther)
+                    }
+                    if !o.appSkipGroups.isEmpty {
+                        skippedLeftovers(o.appSkipGroups)
                     }
                     if !o.skipped.isEmpty {
                         section("Atlananlar · \(o.skipped.count)", tint: Theme.warn, lines: o.skipped)
@@ -47,6 +50,37 @@ struct ResultView: View {
                     }
                 }
                 .padding(.horizontal, 24).padding(.vertical, 22)
+            }
+        }
+    }
+
+    /// Uygulaması taşınamadığı için atlanan artıklar, uygulamasının altında.
+    private func skippedLeftovers(_ groups: [TrashOutcome.AppSkipGroup]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Uygulaması taşınamadığı için atlanan artıklar · \(groups.reduce(0) { $0 + $1.lines.count })")
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.warn)
+            Panel {
+                VStack(spacing: 0) {
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { i, g in
+                        if i > 0 { Divider().opacity(0.6) }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(g.appName) taşınamadı; artıkları yerinde kaldı")
+                                .font(.system(size: 12.5, weight: .semibold))
+                            ForEach(g.lines) { l in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).foregroundStyle(Theme.fg3)
+                                    Text(Fmt.tilde(l.path)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.fg2)
+                                        .lineLimit(1).truncationMode(.middle)
+                                }
+                                .padding(.leading, 10)
+                            }
+                            Text("Uygulama taşınamadığı için artıkları da bırakıldı; uygulamayı kaldırdıktan sonra yeniden tarayıp artıkları ayrıca seçebilirsin.")
+                                .font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
         }
     }

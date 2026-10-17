@@ -78,7 +78,7 @@ public enum ItemExplainer {
         case .folders:
             return ("Hiçbir şey içermeyen (ya da yalnız Finder'ın görünmez ayar dosyasını içeren) bir klasör.",
                     "Bir şey kaybolmaz; klasör Çöp Kutusu'na gider, istersen geri alırsın.", .trashRestorable)
-        case .apps: return app(item)
+        case .apps: return item.isLeftover ? leftover(item) : app(item)
         }
     }
 
@@ -260,10 +260,58 @@ public enum ItemExplainer {
     }
 
     private static func app(_ item: CleanItem) -> (String, String, Recovery) {
-        let hasLeft = (item.relatedPaths?.isEmpty == false)
-        return ("Mac'inde kurulu bir uygulama\(hasLeft ? " ve ayar/önbellek gibi artık dosyaları" : "").",
-                "Uygulama ve (varsa) ayarları kalkar. Gerekirse yeniden kurarsın; App Store ya da üreticinin sitesinden inebilir. Çöp Kutusu'ndan da geri alabilirsin.",
+        let hasLeft = (item.leftoverBytes ?? 0) > 0
+        return ("Mac'inde kurulu bir uygulama\(hasLeft ? "; ayar ve veri artıkları ayrı satırlarda listelenir" : "").",
+                "Uygulama kalkar. Gerekirse yeniden kurarsın; App Store ya da üreticinin sitesinden inebilir. Artıkları ayrıca işaretlemezsen yerinde kalır. Çöp Kutusu'ndan geri alabilirsin.",
                 .trashRestorable)
+    }
+
+    /// Uygulama artığı: türü yoldan anlaşılır (Application Support, Caches, ...). Saf metin işlevi.
+    private static func leftover(_ item: CleanItem) -> (String, String, Recovery) {
+        let p = item.path
+        let name = (p as NSString).lastPathComponent
+        if p.contains("/Library/Application Support/") {
+            return ("Uygulamanın ayarları ve verileri; uygulamayı silince işe yaramaz.",
+                    "Uygulamayı yeniden kurarsan ayarların sıfırdan başlar. Uygulama kendi dosyalarını burada tutuyorsa onlar da gider. Çöp Kutusu'ndan geri alabilirsin.", .trashRestorable)
+        }
+        if p.contains("/Library/Caches/") {
+            return ("Uygulamanın hızlanmak için sakladığı geçici dosyalar (önbellek).",
+                    "Bir şey kaybolmaz; uygulama gerekirse yeniden oluşturur.", .regenerates)
+        }
+        if p.contains("/Library/Preferences/") {
+            return ("Uygulamanın ayar dosyası.",
+                    "Uygulamayı yeniden kurarsan ayarların sıfırdan başlar.", .trashRestorable)
+        }
+        if p.contains("/Library/Logs/") {
+            return ("Uygulamanın tuttuğu kayıt (log) dosyaları.",
+                    "Zararsız; yalnız eski kayıtlar gider.", .regenerates)
+        }
+        if p.contains("/Library/Group Containers/") {
+            return ("Aynı geliştiricinin uygulamalarının ortak kullandığı veri alanı.",
+                    "Aynı geliştiricinin başka bir uygulaması kuruluysa onun verileri de gidebilir. Çöp Kutusu'ndan geri alabilirsin.", .trashRestorable)
+        }
+        if p.contains("/Library/Containers/") {
+            return ("Uygulamanın macOS'un ayırdığı kendi kutusu; ayarları ve verileri burada durur.",
+                    "Uygulamanın ayarları ve verileri gider; yeniden kurarsan sıfırdan başlar. Çöp Kutusu'ndan geri alabilirsin.", .trashRestorable)
+        }
+        if p.contains("/Library/Saved Application State/") {
+            return ("Uygulamanın pencerelerini nerede bıraktığını hatırladığı kayıt.",
+                    "Zararsız; uygulama pencereleri varsayılan yerde açar.", .regenerates)
+        }
+        if p.contains("/Library/HTTPStorages/") {
+            return ("Uygulamanın internet bağlantılarında sakladığı oturum kayıtları.",
+                    "Uygulamayı yeniden kurarsan internet hesaplarında yeniden oturum açman gerekebilir.", .regenerates)
+        }
+        if p.contains("/Library/WebKit/") {
+            return ("Uygulamanın içindeki web görünümlerinin sakladığı çerez ve geçici veriler.",
+                    "Uygulamayı yeniden kurarsan internet hesaplarında yeniden oturum açman gerekebilir.", .regenerates)
+        }
+        if name.hasPrefix(".") {
+            return ("Uygulamanın ev klasöründe bıraktığı gizli ayar ve veri klasörü (\(name)).",
+                    "Uygulamayı yeniden kurarsan ayarların sıfırdan başlar. Çöp Kutusu'ndan geri alabilirsin.", .trashRestorable)
+        }
+        return ("Uygulamanın geride bıraktığı ayar ya da veri dosyası.",
+                "Uygulamayı yeniden kurarsan ayarların sıfırdan başlar. Çöp Kutusu'ndan geri alabilirsin.", .trashRestorable)
     }
 
     // MARK: Dikkat notları
@@ -288,10 +336,10 @@ public enum ItemExplainer {
         if item.needsAuthorization == true {
             out.append("macOS silmeden önce parola ya da Touch ID isteyecek.")
         }
-        if let rel = item.relatedPaths, !rel.isEmpty {
-            out.append("\(rel.count) artık dosya (ayarlar, önbellek) birlikte taşınır.")
+        if item.leftoverMatch == .name {
+            out.append("Adı benziyor, başka uygulamaya ait olabilir; emin değilsen seçme.")
         }
-        if item.category == .apps, item.risk == .info {
+        if item.category == .apps, !item.isLeftover, item.risk == .info {
             out.append("Yakında açılmış; kullanıyor olabilirsin.")
         }
         if item.category == .largeOld, item.risk == .red {

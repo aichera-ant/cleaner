@@ -46,15 +46,41 @@ enum SampleData {
             ("\(h)/Documents/logo-kaynak.psd", .info, nil),
             ("\(h)/Downloads/logo-kaynak.psd", .yellow, nil),
         ], keeper: "\(h)/Documents/logo-kaynak.psd")
-        func app(_ n: String, _ size: UInt64, _ days: Int, risk: Risk = .yellow, lock: String? = nil, related: Int = 0) {
-            out.append(CleanItem(category: .apps, name: n, path: "/Applications/\(n).app", allocatedBytes: size, risk: risk,
-                                 dateSignal: .opened(days: days), lockReason: lock,
-                                 relatedPaths: (0..<related).map { "\(h)/Library/Application Support/\(n)/\($0)" }))
+        func app(_ n: String, _ size: UInt64, _ days: Int, risk: Risk = .yellow, lock: String? = nil, auth: Bool = false,
+                 leftoverBytes: UInt64? = nil) -> CleanItem {
+            CleanItem(category: .apps, name: n, path: "/Applications/\(n).app", allocatedBytes: size, risk: risk,
+                      dateSignal: .opened(days: days), lockReason: lock, preselect: auth ? false : nil,
+                      needsAuthorization: auth ? true : nil, leftoverBytes: leftoverBytes)
         }
-        app("Pixelmator Pro", 1500 * MB, 410, related: 3)
-        app("Sketch", 700 * MB, 250, related: 2)
-        app("Visual Studio Code", 1480 * MB, 0, risk: .locked, lock: "Kayıt yok ama code komutuyla kullanılıyor")
-        app("Notion Calendar", 320 * MB, 190)
+        func leftover(_ parent: CleanItem, _ path: String, _ size: UInt64, _ match: LeftoverMatch, bundleID: String) {
+            let url = URL(fileURLWithPath: path)
+            out.append(CleanItem(
+                category: .apps, name: "\(parent.name): \(url.lastPathComponent)", path: path, allocatedBytes: size,
+                risk: match == .bundleID ? .green : .yellow, dateSignal: .modified(days: 30),
+                lockReason: parent.lockReason.map { "uygulama kilitli: \($0)" },
+                note: match == .bundleID ? "\(parent.name) uygulamasının verisi (bundle id ile eşleşti)"
+                    : "Adı benziyor; başka bir uygulamaya da ait olabilir (\(parent.name))",
+                preselect: false, parentAppID: parent.id, leftoverMatch: match, appBundleID: bundleID,
+                matchedName: match == .name ? parent.name.lowercased().replacingOccurrences(of: " ", with: "") : nil))
+        }
+        let L = "\(h)/Library"
+        let pix = app("Pixelmator Pro", 1500 * MB, 410, leftoverBytes: 3 * GB + 220 * MB)
+        out.append(pix)
+        leftover(pix, "\(L)/Application Support/com.pixelmatorteam.pixelmator.x", 2 * GB + 900 * MB, .bundleID, bundleID: "com.pixelmatorteam.pixelmator.x")
+        leftover(pix, "\(L)/Caches/com.pixelmatorteam.pixelmator.x", 310 * MB, .bundleID, bundleID: "com.pixelmatorteam.pixelmator.x")
+        leftover(pix, "\(L)/Preferences/com.pixelmatorteam.pixelmator.x.plist", 12 * 1000, .bundleID, bundleID: "com.pixelmatorteam.pixelmator.x")
+        leftover(pix, "\(L)/Application Support/Pixelmator", 640 * MB, .name, bundleID: "com.pixelmatorteam.pixelmator.x")
+        leftover(pix, "\(h)/.pixelmator", 4 * MB, .name, bundleID: "com.pixelmatorteam.pixelmator.x")
+        let sketch = app("Sketch", 700 * MB, 250, auth: true, leftoverBytes: 180 * MB)
+        out.append(sketch)
+        leftover(sketch, "\(L)/Containers/com.bohemiancoding.sketch3", 180 * MB, .bundleID, bundleID: "com.bohemiancoding.sketch3")
+        out.append(app("Visual Studio Code", 1480 * MB, 0, risk: .locked, lock: "Kayıt yok ama code komutuyla kullanılıyor"))
+        out.append(app("Notion Calendar", 320 * MB, 190))
+        // Sahipsiz artık: uygulama öğesi bu taramada yok.
+        out.append(CleanItem(category: .apps, name: "Eski Araç: com.eski.arac", path: "\(L)/Application Support/com.eski.arac",
+                             allocatedBytes: 95 * MB, risk: .green, dateSignal: .modified(days: 300), preselect: false,
+                             parentAppID: CleanItem.makeID(path: "/Applications/Eski Araç.app"), leftoverMatch: .bundleID,
+                             appBundleID: "com.eski.arac"))
         return out
     }
 }

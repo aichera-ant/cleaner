@@ -54,3 +54,19 @@ func makeDone(id: String, path: String, bytes: UInt64, action: String, detail: S
     let data = try! JSONSerialization.data(withJSONObject: obj)
     return try! JSONDecoder().decode(TrashReport.Done.self, from: data)
 }
+
+/// Uygulama öğesi (kategori apps).
+func appItem(_ name: String, risk: Risk = .yellow, lock: String? = nil, auth: Bool? = nil, bytes: UInt64 = 1000,
+             leftoverBytes: UInt64? = nil) -> CleanItem {
+    CleanItem(category: .apps, name: name, path: "/tmp/cleaner-test/Applications/\(name).app", allocatedBytes: bytes, risk: risk,
+              lockReason: lock, preselect: auth == true ? false : nil, needsAuthorization: auth, leftoverBytes: leftoverBytes)
+}
+
+/// Uygulama artığı; `parent` verilen uygulama öğesine bağlanır.
+func leftoverItem(_ name: String, of parent: CleanItem?, match: LeftoverMatch = .bundleID, bytes: UInt64 = 100,
+                  lock: String? = nil, path: String? = nil, parentID: String? = nil) -> CleanItem {
+    CleanItem(category: .apps, name: name, path: path ?? "/tmp/cleaner-test/Library/Application Support/\(name)", allocatedBytes: bytes,
+              risk: match == .bundleID ? .green : .yellow, lockReason: lock, preselect: false,
+              parentAppID: parent?.id ?? parentID, leftoverMatch: match, appBundleID: "com.test.app",
+              matchedName: match == .name ? "x" : nil)
+}

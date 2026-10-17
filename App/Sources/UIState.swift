@@ -17,10 +17,14 @@ final class UIState {
         /// Akıllı seçimde taşınacak öğe yok.
         case nothingToClean
         case permissions
+        /// "Uygulama ve artıkları": verilen uygulama öğesinin artık seçimi.
+        case appLeftovers(String)
     }
 
     var section: Section = .overview
     var sheet: Sheet?
+    /// Uygulamalar sayfasında artıkları açık olan uygulamalar (varsayılan: hepsi kapalı).
+    var expandedApps: Set<String> = []
     /// Taşıma sonunda Uygulama Yönetimi reddi görüldü; sonuç gösterilince izin ekranı yeniden önerilir.
     var pendingPermissions = false
     /// Kategori listelerinin ortak sıralaması; UserDefaults'ta hatırlanır.

@@ -40,7 +40,10 @@ struct SidebarView: View {
     private func sizeText(_ c: ItemCategory) -> String? {
         guard model.snapshot != nil, model.phase != .scanning, !model.resultsOutdated else { return nil }
         let its = model.items.filter { $0.category == c }
-        if c == .apps { return its.isEmpty ? nil : "\(its.count)" }
+        if c == .apps {
+            let n = its.filter { !$0.isLeftover }.count
+            return n == 0 ? nil : "\(n)"
+        }
         let b = Summaries.totalBytes(its)
         return b == 0 ? nil : Fmt.bytes(b)
     }

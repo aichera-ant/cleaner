@@ -23,6 +23,8 @@ struct CategoryView: View {
                 }
                 if category == .duplicates {
                     DuplicatesBody(model: model)
+                } else if category == .apps {
+                    AppsBody(model: model, ui: ui)
                 } else {
                     CategoryList(model: model, ui: ui, category: category)
                 }
@@ -83,14 +85,13 @@ struct CategoryListHeader: View {
     let ui: UIState
     let items: [CleanItem]
     @State private var request: SelectRequest?
-    @Environment(\.snapshotMode) private var snapshot
 
     var body: some View {
         let nsel = items.reduce(0) { $0 + (model.selection.isSelected($1) ? 1 : 0) }
         HStack(spacing: 14) {
             Text("\(items.count) öğe · \(nsel) seçili").foregroundStyle(Theme.fg2)
             Spacer()
-            sortMenu
+            SortMenu(ui: ui)
             Button("Tümünü seç") { requestSelectAll(items, model: model, request: $request) }
                 .buttonStyle(.plain).foregroundStyle(Theme.accent)
             if nsel > 0 {
@@ -100,8 +101,13 @@ struct CategoryListHeader: View {
         }
         .redSelectDialog($request, model: model)
     }
+}
 
-    @ViewBuilder private var sortMenu: some View {
+struct SortMenu: View {
+    let ui: UIState
+    @Environment(\.snapshotMode) private var snapshot
+
+    var body: some View {
         if snapshot {
             Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down").foregroundStyle(Theme.accent)
         } else {
@@ -144,6 +150,8 @@ struct CategoryList: View {
 struct ItemRow: View {
     let item: CleanItem
     let model: AppModel
+    /// nil: `model.selection.toggle(item)`. Uygulamalar sayfası kendi akışını verir (artık sayfası).
+    var onToggle: (() -> Void)?
     @State private var open = false
 
     var body: some View {
@@ -151,7 +159,7 @@ struct ItemRow: View {
         let selectable = model.selection.isSelectable(item)
         let on = model.selection.isSelected(item)
         HStack(alignment: .top, spacing: 10) {
-            CheckBox(on: on, enabled: selectable, lockHelp: item.lockReason, action: { model.selection.toggle(item) }).padding(.top, 5)
+            CheckBox(on: on, enabled: selectable, lockHelp: item.lockReason, action: { if let onToggle { onToggle() } else { model.selection.toggle(item) } }).padding(.top, 5)
             ItemIcon(item: item)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)

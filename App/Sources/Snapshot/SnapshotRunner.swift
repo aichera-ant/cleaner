@@ -10,7 +10,7 @@ enum SnapshotRunner {
     static func run(into dir: String) async {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         for width in [1100, 800] {
-            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler"] {
+            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler", "uygulama-artik"] {
                 let (model, ui) = await prepare(name)
                 render(RootView(model: model, ui: ui, perms: perms(for: name)), width: width, to: "\(dir)/\(name)-\(width).png")
                 model.cancelScan()
@@ -50,7 +50,13 @@ enum SnapshotRunner {
             if let c = model.items.first(where: { $0.category == .duplicates && $0.path.contains("Desktop") }) { model.selection.keep(c) }
         case "uygulamalar":
             ui.section = .category(.apps)
-            if let a = model.items.first(where: { $0.name == "Sketch" }) { model.selection.set(a, selected: true) }
+            if let a = model.items.first(where: { $0.name == "Pixelmator Pro" }) {
+                ui.expandedApps.insert(a.id)
+                model.selection.selectApp(a, leftoverIDs: model.selection.defaultLeftoverIDs(of: a))
+            }
+        case "uygulama-artik":
+            ui.section = .category(.apps)
+            if let a = model.items.first(where: { $0.name == "Pixelmator Pro" }) { ui.sheet = .appLeftovers(a.id) }
         case "onizleme", "sonuc":
             if let y = model.items.first(where: { $0.name.hasPrefix("Playwright") }) { model.selection.set(y, selected: true) }
             if let y = model.items.first(where: { $0.name.hasPrefix("iOS 17.2") }) { model.selection.set(y, selected: true) }

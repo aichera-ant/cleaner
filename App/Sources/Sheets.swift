@@ -23,6 +23,8 @@ struct SheetLayer: View {
                         ui.sheet = nil
                         Task { await model.startScan() }
                     })
+                case .appLeftovers(let id):
+                    AppLeftoversSheet(model: model, appID: id, onClose: { ui.sheet = nil }).id(id)
                 case .permissions:
                     PermissionsSheet(perms: perms, onContinue: {
                         perms.markSeen()
@@ -99,7 +101,7 @@ struct ConfirmSheet: View {
                 }
                 if !plan.authorizationItems.isEmpty {
                     Label {
-                        Text("**macOS parola ya da Touch ID isteyecek** (\(plan.authorizationItems.count) öğe): \(plan.authorizationItems.map(\.name).joined(separator: ", ")). Bu uygulamalar macOS tarafından korunuyor; her biri için ayrıca onay istenir, vazgeçersen o uygulama taşınmaz.")
+                        Text("**macOS parolayı bir kez isteyecek** (\(plan.authorizationItems.count) korunan uygulama): \(plan.authorizationItems.map(\.name).joined(separator: ", ")). Bu uygulamalar macOS tarafından korunuyor; hepsi için tek seferde sorulur. Vazgeçersen ya da taşınamazsa o uygulamaların artıkları da atlanır.")
                     } icon: { Image(systemName: "touchid") }
                         .font(.system(size: 12)).foregroundStyle(Theme.fg2)
                         .padding(.horizontal, 10).padding(.vertical, 8)
@@ -111,7 +113,11 @@ struct ConfirmSheet: View {
                         ForEach(Array(plan.trashGroups.enumerated()), id: \.offset) { _, g in
                             header("\(CategoryInfo.info(for: g.category).title) · \(Fmt.bytes(Summaries.totalBytes(g.items)))",
                                    sub: ItemExplainer.categoryIntro(g.category))
-                            ForEach(g.items) { line($0) }
+                            if g.category == .apps {
+                                ForEach(plan.appGroups) { ag in appBlock(ag) }
+                            } else {
+                                ForEach(g.items) { line($0) }
+                            }
                         }
                         if !plan.commandItems.isEmpty {
                             header("Komutla temizlenecek · Çöp Kutusu'na gitmez · \(Fmt.bytes(plan.commandBytes))",
@@ -143,6 +149,35 @@ struct ConfirmSheet: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.hover)
+    }
+
+    /// Uygulama ve altında seçili artıkları (girintili). Uygulaması seçili olmayan artıklar ayrı başlıkta.
+    @ViewBuilder private func appBlock(_ ag: PlanAppGroup) -> some View {
+        if let app = ag.app {
+            line(app)
+        } else {
+            Text("Uygulaması kalacak artıklar (yalnız bu dosyalar taşınır)")
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fg2)
+                .padding(.horizontal, 10).padding(.vertical, 5).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.hover.opacity(0.6))
+        }
+        ForEach(ag.leftovers) { l in leftoverLine(l) }
+    }
+
+    private func leftoverLine(_ item: CleanItem) -> some View {
+        let e = ItemExplainer.explain(item)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).foregroundStyle(Theme.fg3).padding(.top, 3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(LeftoverRow.title(item)).font(.system(size: 12, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text(e.what).font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                MatchPill(match: item.leftoverMatch)
+            }
+            Spacer(minLength: 6)
+            Text(Fmt.bytes(item.allocatedBytes)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
+        }
+        .padding(.leading, 28).padding(.trailing, 10).padding(.vertical, 5)
+        .overlay(alignment: .top) { Divider().opacity(0.3).padding(.leading, 28) }
     }
 
     private func line(_ item: CleanItem) -> some View {

@@ -78,6 +78,14 @@ public final class AppModel {
         return v
     }
 
+    /// Uygulamalar sayfasının düzeni (uygulamalar sıralamaya göre, artıklar altında); sıralama başına bir kez hesaplanır.
+    public func appsLayout(by sort: ItemSort) -> AppsLayout {
+        if let v = cache.apps[sort.rawValue] { return v }
+        let v = Summaries.appsLayout(items, sort: sort)
+        cache.apps[sort.rawValue] = v
+        return v
+    }
+
     /// Öğe açıklaması; öğe başına bir kez hesaplanır (yalnız görünen satırlar için).
     public func explanation(for item: CleanItem) -> ItemExplanation {
         if let e = cache.explanations[item.id] { return e }
@@ -209,5 +217,6 @@ final class DerivedCache {
     var groups: [DuplicateGroup]?
     var sorted: [String: [CleanItem]] = [:]
     var explanations: [String: ItemExplanation] = [:]
-    func reset() { groups = nil; sorted = [:]; explanations = [:] }
+    var apps: [String: AppsLayout] = [:]
+    func reset() { groups = nil; sorted = [:]; explanations = [:]; apps = [:] }
 }

@@ -12,7 +12,55 @@ public struct DuplicateGroup: Sendable, Equatable, Identifiable {
     public var untouchable: Bool { members.allSatisfy { $0.isLocked } }
 }
 
+/// Uygulamalar sayfasında bir uygulama ve artıkları.
+public struct AppGroup: Sendable, Equatable, Identifiable {
+    public var app: CleanItem
+    /// Boyuta göre azalan.
+    public var leftovers: [CleanItem]
+    public var id: String { app.id }
+    public var leftoverBytes: UInt64 { Summaries.totalBytes(leftovers) }
+    public var exactCount: Int { leftovers.filter { $0.leftoverMatch == .bundleID }.count }
+}
+
+/// Uygulamalar sayfasının satır düzeni: uygulamalar seçili sıralamada, artıklar kendi uygulamasının altında.
+public struct AppsLayout: Sendable, Equatable {
+    public var groups: [AppGroup]
+    /// `parentAppID` dolu ama uygulama öğesi taramada olmayan artıklar.
+    public var orphans: [CleanItem]
+}
+
+/// "Uygulamalar" özet kartı: uygulama sayısı ve boyutu ile artıkların toplamı.
+public struct AppsSummary: Sendable, Equatable {
+    public var appCount = 0
+    public var appBytes: UInt64 = 0
+    public var leftoverCount = 0
+    public var leftoverBytes: UInt64 = 0
+    public var totalBytes: UInt64 { appBytes &+ leftoverBytes }
+}
+
 public enum Summaries {
+    public static func appsLayout(_ items: [CleanItem], sort: ItemSort) -> AppsLayout {
+        let apps = items.filter { $0.category == .apps && !$0.isLeftover }
+        let ids = Set(apps.map(\.id))
+        var byParent: [String: [CleanItem]] = [:]
+        var orphans: [CleanItem] = []
+        for l in items where l.category == .apps && l.isLeftover {
+            if let a = l.parentAppID, ids.contains(a) { byParent[a, default: []].append(l) } else { orphans.append(l) }
+        }
+        let groups = sort.sorted(apps).map { a in
+            AppGroup(app: a, leftovers: sorted(byParent[a.id] ?? []))
+        }
+        return AppsLayout(groups: groups, orphans: sorted(orphans))
+    }
+
+    public static func appsSummary(_ items: [CleanItem]) -> AppsSummary {
+        var s = AppsSummary()
+        for i in items where i.category == .apps {
+            if i.isLeftover { s.leftoverCount += 1; s.leftoverBytes &+= i.allocatedBytes } else { s.appCount += 1; s.appBytes &+= i.allocatedBytes }
+        }
+        return s
+    }
+
     /// Mükerrer öğeleri gruplara böler; gruplar tasarruf potansiyeline göre azalan sırada.
     public static func duplicateGroups(_ items: [CleanItem]) -> [DuplicateGroup] {
         var order: [String] = []
@@ -61,7 +109,7 @@ public enum Summaries {
     public static func heldBackGreens(_ items: [CleanItem], selection: SelectionState = SelectionState()) -> [CleanItem] {
         items.filter {
             let e = selection.effective($0)
-            return e.risk == .green && !e.isLocked && e.method != .none && selection.isSelectable($0) && !e.isDefaultSelected
+            return !$0.isLeftover && e.risk == .green && !e.isLocked && e.method != .none && selection.isSelectable($0) && !e.isDefaultSelected
         }
     }
 
@@ -85,6 +133,14 @@ public enum Summaries {
     }
 }
 
+/// Onay sayfasında bir uygulama ve altında seçili artıkları. `app == nil`: uygulaması seçili olmayan artıklar.
+public struct PlanAppGroup: Sendable, Equatable, Identifiable {
+    public var app: CleanItem?
+    public var leftovers: [CleanItem]
+    public var id: String { app?.id ?? "leftovers-only" }
+    public var bytes: UInt64 { Summaries.totalBytes(leftovers) &+ (app?.allocatedBytes ?? 0) }
+}
+
 /// Taşımadan önceki onay sayfasının içeriği.
 public struct TrashPlan: Sendable, Equatable {
     /// Çöp Kutusu'na gidecekler, kategoriye göre (kategori sırası sabit).
@@ -95,6 +151,9 @@ public struct TrashPlan: Sendable, Equatable {
     public var nonGreen: [CleanItem]
     /// Taşırken macOS parola ya da Touch ID isteyecek olanlar (seçilenlerin alt kümesi).
     public var authorizationItems: [CleanItem]
+    /// `trashGroups` içindeki uygulamalar kategorisi: uygulama ve altında artıkları. Uygulaması seçilmeyen artıklar
+    /// sonda tek grupta (`app == nil`).
+    public var appGroups: [PlanAppGroup]
     public var itemCount: Int
     public var totalBytes: UInt64
     public var ids: [String]
@@ -135,12 +194,25 @@ public struct TrashPlan: Sendable, Equatable {
         }
         for i in sortedItems where Self.isCommand(i) { cmds.append(i) }
         trashGroups = groups.map { (category: $0.0, items: $0.1) }
+        appGroups = Self.planAppGroups(groups.first { $0.0 == .apps }?.1 ?? [])
         commandItems = cmds
         nonGreen = sortedItems.filter { $0.risk != .green }
         authorizationItems = sortedItems.filter { Fmt.needsAuthorization($0) }
         itemCount = sortedItems.count
         totalBytes = Summaries.totalBytes(sortedItems)
         ids = sortedItems.map(\.id)
+    }
+
+    static func planAppGroups(_ items: [CleanItem]) -> [PlanAppGroup] {
+        let apps = items.filter { !$0.isLeftover }
+        let ids = Set(apps.map(\.id))
+        let leftovers = items.filter(\.isLeftover)
+        var out = apps.map { a in
+            PlanAppGroup(app: a, leftovers: leftovers.filter { $0.parentAppID == a.id })
+        }
+        let rest = leftovers.filter { $0.parentAppID.map { !ids.contains($0) } ?? true }
+        if !rest.isEmpty { out.append(PlanAppGroup(app: nil, leftovers: rest)) }
+        return out
     }
 
     static func isCommand(_ i: CleanItem) -> Bool {
@@ -165,6 +237,20 @@ public struct TrashOutcome: Sendable, Equatable {
         public var name: String
         public var path: String
         public var reason: String
+        /// Artıksa bağlı olduğu uygulama öğesinin id'si ve adı (tarama sonucunda varsa).
+        public var parentAppID: String?
+        public var parentName: String?
+    }
+
+    /// Çekirdeğin, uygulaması taşınamayan artığa yazdığı neden.
+    public static let appFailedSkipReason = "uygulama taşınamadığı için atlandı"
+
+    /// Uygulaması taşınamadığı için atlanan artıklar, uygulamasına göre.
+    public struct AppSkipGroup: Sendable, Equatable, Identifiable {
+        public var appID: String
+        public var appName: String
+        public var lines: [Line]
+        public var id: String { appID }
     }
 
     public var trashedCount: Int
@@ -174,6 +260,26 @@ public struct TrashOutcome: Sendable, Equatable {
     public var refused: [Line]
     public var skipped: [Line]
 
+    /// Reddedilenlerden, "uygulama taşınamadığı için atlandı" nedenli artıklar hariç olanlar.
+    public var refusedOther: [Line] { refused.filter { !Self.isAppSkip($0) } }
+
+    /// "Uygulama taşınamadığı için atlandı" nedenli artıklar, uygulamasının altında (uygulama sırası ilk görülme sırası).
+    public var appSkipGroups: [AppSkipGroup] {
+        var order: [String] = []
+        var map: [String: AppSkipGroup] = [:]
+        for l in refused where Self.isAppSkip(l) {
+            let key = l.parentAppID ?? "unknown"
+            if map[key] == nil {
+                order.append(key)
+                map[key] = AppSkipGroup(appID: key, appName: l.parentName ?? "Bilinmeyen uygulama", lines: [])
+            }
+            map[key]?.lines.append(l)
+        }
+        return order.compactMap { map[$0] }
+    }
+
+    private static func isAppSkip(_ l: Line) -> Bool { l.reason.contains(appFailedSkipReason) }
+
     public var freedBytes: UInt64 { trashedBytes &+ commandBytes }
     public var doneCount: Int { trashedCount + commandCount }
 
@@ -182,7 +288,9 @@ public struct TrashOutcome: Sendable, Equatable {
         func line(_ r: TrashReport.Refused) -> Line {
             let item = byID[r.id]
             let path = r.path.isEmpty ? (item?.path ?? "") : r.path
-            return Line(id: r.id, name: item?.name ?? (path as NSString).lastPathComponent, path: path, reason: r.reason)
+            let parent = item?.parentAppID.flatMap { byID[$0] }
+            return Line(id: r.id, name: item?.name ?? (path as NSString).lastPathComponent, path: path, reason: r.reason,
+                        parentAppID: item?.parentAppID, parentName: parent?.name)
         }
         let trashed = report.done.filter { $0.action == .trashed }
         let commands = report.done.filter { $0.action == .command }

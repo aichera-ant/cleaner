@@ -84,7 +84,8 @@ struct OverviewView: View {
 
     private func card(_ info: CategoryInfo) -> some View {
         let its = model.items.filter { $0.category == info.category }
-        let rc = Summaries.riskCounts(its)
+        let rc = Summaries.riskCounts(info.category == .apps ? its.filter { !$0.isLeftover } : its)
+        let appsSum = Summaries.appsSummary(its)
         let green = its.filter { model.selection.effective($0).isDefaultSelected && model.selection.isSelectable($0) }
         let isApp = info.category == .apps
         let held = Summaries.heldBackGreens(its, selection: model.selection).count
@@ -94,9 +95,9 @@ struct OverviewView: View {
                     CategoryTile(tint: Theme.tint(info.category), symbol: info.symbol, size: 24)
                     Text(info.title).font(.system(size: 13, weight: .semibold))
                 }
-                Text(isApp ? "\(its.count) uygulama" : Fmt.bytes(Summaries.totalBytes(green)))
+                Text(isApp ? "\(appsSum.appCount) uygulama" : Fmt.bytes(Summaries.totalBytes(green)))
                     .font(.system(size: 22, weight: .bold, design: .rounded)).monospacedDigit()
-                Text(isApp ? "uzun süredir açılmamış" : "güvenle temizlenebilir")
+                Text(isApp ? "artıklarıyla \(Fmt.bytes(appsSum.totalBytes))" : "güvenle temizlenebilir")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.fg2).padding(.top, -6)
                 if held > 0 && !isApp {
                     Text("\(held) öğe yakın zamanda kullanılmış; seçmek sana kalmış")
