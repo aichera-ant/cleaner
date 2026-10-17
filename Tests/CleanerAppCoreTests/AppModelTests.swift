@@ -15,6 +15,17 @@ import Testing
         return (model, scan, trash)
     }
 
+    @Test func refreshDiskReadsProviderAgain() {
+        final class Box: @unchecked Sendable { var avail: UInt64 = 400 }
+        let box = Box()
+        let m = AppModel(scanService: FakeScan(ScanSnapshot(items: [], scannedAt: t0)), trashService: FakeTrash(),
+                         now: { self.t0 }, diskProvider: { DiskInfo(totalBytes: 1000, availableBytes: box.avail) })
+        #expect(m.disk?.availableBytes == 400)
+        box.avail = 900  // Çöp Kutusu uygulama dışında boşaltıldı
+        m.refreshDisk()
+        #expect(m.disk?.availableBytes == 900)
+    }
+
     @Test func scanAppliesDefaultSelection() async {
         let g = item("g"), l = item("l", lock: "k"), r = item("r", risk: .red)
         let (m, _, _) = make(items: [g, l, r], clock: Clock(t0))

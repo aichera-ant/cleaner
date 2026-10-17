@@ -1,5 +1,6 @@
 import CleanerAppCore
 import CleanerKit
+import AppKit
 import SwiftUI
 
 @main
@@ -23,6 +24,12 @@ struct CleanerApp: App {
         WindowGroup("Cleaner") {
             RootView(model: model, ui: ui)
                 .frame(minWidth: 760, minHeight: 540)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    model.refreshDisk()
+                }
+                .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
+                    model.refreshDisk()
+                }
         }
         .defaultSize(width: 1100, height: 720)
         .windowStyle(.hiddenTitleBar)

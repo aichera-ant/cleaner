@@ -105,6 +105,12 @@ public final class AppModel {
         progress.apply(p)
     }
 
+    /// Boş alanı yeniden okur. Çöp Kutusu uygulama dışında boşaltılınca da güncel kalsın diye
+    /// pencere öne gelince ve belli aralıklarla çağrılır.
+    public func refreshDisk() {
+        disk = diskProvider()
+    }
+
     private func finishScan(_ snap: ScanSnapshot) {
         snapshot = snap
         resultsOutdated = false
