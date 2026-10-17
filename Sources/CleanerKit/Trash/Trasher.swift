@@ -55,7 +55,7 @@ public struct TrashReport: Codable, Sendable {
 /// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile). Artıklar (`relatedPaths`) paketten
 /// SONRA taşınır; paket taşınamazsa artıklara dokunulmaz.
 ///
-/// Yetkili taşıma (`privilegedRecycler`, gerçekte `WorkspaceRecycler`: macOS parola/Touch ID ister): YALNIZ
+/// Yetkili taşıma (`privilegedRecycler`, gerçekte `FinderRecycler`: Finder parola/Touch ID ister): YALNIZ
 /// taze taramada `needsAuthorization == true` olan `apps` öğesinin `.app` paketi için, dar istisna taşıma anında
 /// yeniden doğrulanınca (yazma sorunu yalnız yetkiyle aşılabilen türdense) kullanılır. Başka hiçbir yol (artıklar
 /// dahil) yetkili taşıyıcıya verilmez; artıklar normal taşıyıcıyla, mevcut kurallarla taşınır. Yetkili taşıyıcı
@@ -77,7 +77,7 @@ public struct Trasher: Sendable {
 
     /// - Parameters:
     ///   - recycler: normal taşıyıcı (varsayılan `FileManager.trashItem`).
-    ///   - privilegedRecycler: yetkili taşıyıcı (arayüz `WorkspaceRecycler` verir; CLI vermez).
+    ///   - privilegedRecycler: yetkili taşıyıcı (arayüz `FinderRecycler` verir; CLI vermez).
     public init(policy: PathPolicy, commands: any CommandRunning, processes: any ProcessListing = LiveProcessLister(),
                 commandTimeout: Duration = .seconds(600), recycler: any Recycling = FileManagerRecycler(),
                 privilegedRecycler: (any Recycling)? = nil) {

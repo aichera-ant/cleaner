@@ -29,6 +29,7 @@ targets:
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: "Aichera"
+        NSAppleEventsUsageDescription: "Cleaner, korunan uygulamaları Finder ile Çöp Kutusu'na taşımak için Finder'ı kullanır; macOS parola ya da Touch ID isteyebilir."
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aichera.cleaner

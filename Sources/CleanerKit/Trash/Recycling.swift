@@ -18,7 +18,9 @@ public struct FileManagerRecycler: Recycling {
     }
 }
 
-/// `NSWorkspace.recycle`: Finder gibi taşır; macOS Uygulama Yönetimi koruması ya da root sahipliği varsa
+/// `NSWorkspace.recycle`. ARTIK ARAYÜZDE KULLANILMAZ: root sahipli paketlerde (ör. `/Applications/Microsoft Word.app`)
+/// yetki istemeden "izin yok" hatası verdiği görüldü; yerine `FinderRecycler` kullanılır.
+/// Önceki niyet: Finder gibi taşır; macOS Uygulama Yönetimi koruması ya da root sahipliği varsa
 /// kullanıcıdan parola/Touch ID ister. YALNIZ `Trasher`'ın yetkili taşıyıcısı olarak, taze taramada
 /// `needsAuthorization` olan ve dar uygulama istisnasını taşıma anında yeniden geçen `.app` paketi için kullanılır.
 /// CLI bunu vermez. Testte çağrılmaz.

@@ -89,10 +89,11 @@ public struct LiveTrashService: TrashService {
         CloudGuard.disableDatalessMaterializationForProcess()
         do {
             let context = try ScanContext.live()
-            // Yetkili taşıyıcı yalnız çekirdeğin doğruladığı `needsAuthorization` uygulama paketi için kullanılır
-            // (macOS parola ya da Touch ID ister).
+            // Yetkili taşıyıcı yalnız çekirdeğin doğruladığı `needsAuthorization` uygulama paketi için kullanılır:
+            // Finder'a Apple Event ile taşıtılır, Finder gerekirse parola ya da Touch ID ister.
+            // (`NSWorkspace.recycle` root sahipli paketlerde yetki istemeden "izin yok" verdiği için kullanılmaz.)
             let trasher = Trasher(policy: context.pathPolicy, commands: context.signals.commands,
-                                  privilegedRecycler: WorkspaceRecycler())
+                                  privilegedRecycler: FinderRecycler())
             return await trasher.trash(ids: ids, scan: scan, dryRun: dryRun, keepers: keepers)
         } catch {
             let refused = ids.map { TrashReport.Refused(id: $0, path: "", reason: "hazırlık başarısız: \(error.localizedDescription)") }
