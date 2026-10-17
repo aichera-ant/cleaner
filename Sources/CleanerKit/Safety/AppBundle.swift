@@ -11,14 +11,31 @@ public struct AppBundleInfo: Sendable, Equatable {
     public var isAppStore: Bool
     /// Kendi kaldırıcısı önerilir: paket sistem/ağ uzantısı, giriş öğesi ya da ayrıcalıklı yardımcı taşıyor.
     public var uninstallerHints: [String]
+    /// Info.plist'teki `CFBundleDisplayName`, `CFBundleName` ve `CFBundleExecutable` (ad tabanlı artık eşleşmesi için).
+    public var displayName: String?
+    public var bundleName: String?
+    public var executableName: String?
 
-    public init(bundleID: String, name: String, version: String?, isAppStore: Bool, uninstallerHints: [String]) {
+    public init(bundleID: String, name: String, version: String?, isAppStore: Bool, uninstallerHints: [String],
+                displayName: String? = nil, bundleName: String? = nil, executableName: String? = nil) {
         self.bundleID = bundleID
         self.name = name
         self.version = version
         self.isAppStore = isAppStore
         self.uninstallerHints = uninstallerHints
+        self.displayName = displayName
+        self.bundleName = bundleName
+        self.executableName = executableName
     }
+
+    /// Uygulamanın bütün normalize adları (paket adı, görünen ad, `CFBundleName`, çalıştırılabilir ad); süzülmemiş.
+    /// Çakışma denetiminde kullanılır (genel adlar dahil: başka uygulamayla çakışma ne kadar geniş o kadar güvenli).
+    public var allNameKeys: Set<String> {
+        Set([name, displayName, bundleName, executableName].compactMap { $0 }.map(LeftoverNames.normalize).filter { !$0.isEmpty })
+    }
+
+    /// Ad tabanlı artık aramasında kullanılabilecek adlar: en az 4 karakter, genel kelime değil.
+    public var leftoverNameKeys: Set<String> { allNameKeys.filter(LeftoverNames.isUsableKey) }
 
     /// Apple sistem uygulaması mı? (`com.apple.*`)
     public var isApple: Bool { AppBundleInfo.isAppleBundleID(bundleID) }
@@ -90,7 +107,13 @@ public struct AppBundleInfo: Sendable, Equatable {
         let isMAS = fm.fileExists(atPath: contents.appending(path: "_MASReceipt").path)
         let hints = uninstallerMarkers.filter { fm.fileExists(atPath: contents.appending(path: $0).path) }
             .map { ($0 as NSString).lastPathComponent }
-        return AppBundleInfo(bundleID: id, name: name, version: version, isAppStore: isMAS, uninstallerHints: hints)
+        func str(_ k: String) -> String? {
+            guard let v = plist[k] as? String, !v.isEmpty, v.count <= 255 else { return nil }
+            return v
+        }
+        return AppBundleInfo(bundleID: id, name: name, version: version, isAppStore: isMAS, uninstallerHints: hints,
+                             displayName: str("CFBundleDisplayName"), bundleName: str("CFBundleName"),
+                             executableName: str("CFBundleExecutable"))
     }
 }
 

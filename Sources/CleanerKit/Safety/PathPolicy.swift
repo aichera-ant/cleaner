@@ -19,6 +19,9 @@ public struct PathPolicy: Sendable {
     private let homeKey: String
     /// Uygulama kökleri (varsayılan `/Applications`, `~/Applications`). Testte geçici klasör verilir.
     public let appRoots: [URL]
+    /// Çakışma denetiminde (ad tabanlı artık) ayrıca bakılan, taşınmayan uygulama kökleri. Varsayılan
+    /// `/System/Applications`; uygulama kökleri dışarıdan verilmişse (test) boş.
+    public let conflictOnlyAppRoots: [URL]
     /// Uygulama köklerinin yazıldığı (standart, çözülmemiş) yollarının anahtarları.
     private let appRootLiteralKeys: [String]
     /// Uygulama köklerinin çözülmüş yollarının anahtarları (`appRootLiteralKeys` ile aynı sırada).
@@ -64,6 +67,7 @@ public struct PathPolicy: Sendable {
         self.subtreeKeys = PathPolicy.homeSubtreeRoots.map { PathUtil.key(homeKey + "/" + $0) }
         let roots = appRoots ?? PathPolicy.defaultAppRoots(home: home)
         self.appRoots = roots
+        self.conflictOnlyAppRoots = appRoots == nil ? [URL(fileURLWithPath: "/System/Applications", isDirectory: true)] : []
         self.appRootLiteralKeys = roots.map { PathUtil.key($0.standardizedFileURL.path) }
         self.appRootKeys = roots.map { PathUtil.key(PathUtil.canonicalDirectory($0)) }
     }
@@ -290,6 +294,42 @@ public struct PathPolicy: Sendable {
             return "artık izinli bir ~/Library klasöründe değil"
         }
         guard matched else { return "artık adı bundle id ile tam eşleşmiyor" }
+        if let reason = protectionReason(for: url) { return reason }
+        guard isInsideHome(url) else { return "ana klasör dışı" }
+        return nil
+    }
+
+    /// Ad tabanlı artık (`LeftoverNames`) Çöp Kutusu'na taşınamıyorsa nedenini döner. Yol, izinli klasörlerden
+    /// birinin (yazıldığı ve çözülmüş haliyle) DOĞRUDAN çocuğu olmalı, kendisi sembolik bağlantı olmamalı, adı
+    /// `key` ile eşleşmeli (`LeftoverNames.matches`) ve `key` kullanılabilir (genel değil) olmalı. Containers,
+    /// Group Containers, iCloud ve başka hiçbir yer kabul edilmez. Çakışan kurulu uygulama ve çalışan uygulama
+    /// denetimi çağıranda (`AppsScanner`, `Trasher`).
+    /// Yolun (yazıldığı haliyle) üst klasörü ad tabanlı arama klasörlerinden biriyse onun göreli adı
+    /// (`LeftoverNames.parents`; ana klasör için ""), değilse nil. Yalnız yol metnine bakar.
+    public func nameLeftoverParent(for url: URL) -> String? {
+        let parent = PathUtil.key((url.standardizedFileURL.path as NSString).deletingLastPathComponent)
+        let literalHome = PathUtil.key(home.standardizedFileURL.path)
+        return LeftoverNames.parents.first { p in
+            let suffix = p.isEmpty ? "" : "/" + p
+            return PathUtil.key(literalHome + suffix) == parent || PathUtil.key(homeKey + suffix) == parent
+        }
+    }
+
+    public func nameLeftoverRejectionReason(for url: URL, key: String) -> String? {
+        guard LeftoverNames.isUsableKey(key) else { return "ad çok kısa ya da çok genel" }
+        let path = url.standardizedFileURL.path
+        let name = (path as NSString).lastPathComponent
+        let parent = (path as NSString).deletingLastPathComponent
+        guard let rel = nameLeftoverParent(for: url) else { return "artık ad eşleşmesine izinli bir klasörde değil" }
+        guard let realParent = PathUtil.realPath(parent),
+              PathUtil.key(realParent) == PathUtil.key(homeKey + (rel.isEmpty ? "" : "/" + rel))
+        else { return "artık klasörü çözülünce başka yere gidiyor" }
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return "yol yok" }
+        if (st.st_mode & S_IFMT) == S_IFLNK { return "sembolik bağlantı" }
+        // Yalnız klasör ya da sıradan dosya (soket, FIFO, aygıt dosyası değil).
+        guard (st.st_mode & S_IFMT) == S_IFDIR || (st.st_mode & S_IFMT) == S_IFREG else { return "klasör ya da dosya değil" }
+        guard LeftoverNames.matches(entry: name, parent: rel, key: key) else { return "artık adı uygulama adıyla eşleşmiyor" }
         if let reason = protectionReason(for: url) { return reason }
         guard isInsideHome(url) else { return "ana klasör dışı" }
         return nil

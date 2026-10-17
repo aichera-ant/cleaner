@@ -19,19 +19,53 @@ public struct FinderRecycler: Recycling {
 
     /// Olayı gönderir; Çöp Kutusu'ndaki konumu (alınabildiyse) döner. Hata `FinderRecycleError` olmalıdır.
     typealias Sender = @Sendable (_ url: URL, _ timeout: TimeInterval) throws -> URL?
+    /// Toplu olayı (tek `core/delo`, doğrudan nesne `typeAEList`) gönderir. Hata `FinderRecycleError` olmalıdır.
+    typealias BatchSender = @Sendable (_ urls: [URL], _ timeout: TimeInterval) throws -> Void
 
     let timeout: TimeInterval
     let sender: Sender
+    let batchSender: BatchSender
 
     public init(timeout: TimeInterval = FinderRecycler.defaultTimeout) {
         self.timeout = timeout
         self.sender = FinderRecycler.sendDeleteEvent
+        self.batchSender = FinderRecycler.sendBatchDeleteEvent
     }
 
-    /// Test için: gerçek Apple Event yerine sahte gönderici.
-    init(timeout: TimeInterval = FinderRecycler.defaultTimeout, sender: @escaping Sender) {
+    /// Test için: gerçek Apple Event yerine sahte gönderici(ler).
+    init(timeout: TimeInterval = FinderRecycler.defaultTimeout, sender: @escaping Sender,
+         batchSender: BatchSender? = nil) {
         self.timeout = timeout
         self.sender = sender
+        self.batchSender = batchSender ?? { urls, t in for u in urls { _ = try sender(u, t) } }
+    }
+
+    /// Bütün yolları TEK Finder olayıyla taşır (Finder bir kez parola/Touch ID ister). Olaydan sonra her kaynak
+    /// ayrı ayrı `lstat` ile doğrulanır: kalkan başarılı, yerinde duran `stillExists`. Olay hatası (iptal -128 ...)
+    /// hepsine aynı hata olarak dağıtılır.
+    public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
+        guard !urls.isEmpty else { return [:] }
+        let batchSender = self.batchSender
+        let timeout = self.timeout
+        let failure: FinderRecycleError? = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try batchSender(urls, timeout)
+                    continuation.resume(returning: nil)
+                } catch {
+                    continuation.resume(returning: FinderRecycler.mapThrown(error))
+                }
+            }
+        }
+        var out: [URL: Result<URL?, any Error>] = [:]
+        for u in urls {
+            if let failure {
+                out[u] = .failure(failure)
+            } else {
+                out[u] = Self.itemExists(at: u) ? .failure(FinderRecycleError.stillExists) : .success(nil)
+            }
+        }
+        return out
     }
 
     public func recycle(_ url: URL) async throws -> URL? {
@@ -62,6 +96,20 @@ public struct FinderRecycler: Recycling {
                                            targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID),
                                            transactionID: AETransactionID(kAnyTransactionID))
         event.setParam(NSAppleEventDescriptor(fileURL: url.standardizedFileURL), forKeyword: AEKeyword(keyDirectObject))
+        return event
+    }
+
+    /// Toplu `core/delo` olayı: doğrudan nesne `typeAEList`, her öğe `typeFileURL` (metin gömme yok). Gönderilmez.
+    static func makeDeleteEvent(for urls: [URL]) -> NSAppleEventDescriptor {
+        let target = NSAppleEventDescriptor(bundleIdentifier: finderBundleID)
+        let event = NSAppleEventDescriptor(eventClass: AEEventClass(kAECoreSuite), eventID: AEEventID(kAEDelete),
+                                           targetDescriptor: target, returnID: AEReturnID(kAutoGenerateReturnID),
+                                           transactionID: AETransactionID(kAnyTransactionID))
+        let list = NSAppleEventDescriptor.list()
+        for (i, u) in urls.enumerated() {
+            list.insert(NSAppleEventDescriptor(fileURL: u.standardizedFileURL), at: i + 1)
+        }
+        event.setParam(list, forKeyword: AEKeyword(keyDirectObject))
         return event
     }
 
@@ -112,6 +160,17 @@ public struct FinderRecycler: Recycling {
     }
 
     // MARK: - Gerçek gönderim (testte çağrılmaz)
+
+    private static let sendBatchDeleteEvent: BatchSender = { urls, timeout in
+        let event = makeDeleteEvent(for: urls)
+        let reply: NSAppleEventDescriptor
+        do {
+            reply = try event.sendEvent(options: [.waitForReply, .canInteract], timeout: timeout)
+        } catch {
+            throw mapThrown(error)
+        }
+        if let error = replyError(reply) { throw error }
+    }
 
     private static let sendDeleteEvent: Sender = { url, timeout in
         let event = makeDeleteEvent(for: url)

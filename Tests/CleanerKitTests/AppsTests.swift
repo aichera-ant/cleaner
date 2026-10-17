@@ -39,6 +39,14 @@ enum AppFixture {
         CleanItem(category: category, name: url.lastPathComponent, path: url.path, allocatedBytes: 1000,
                   risk: .yellow, method: .trash, relatedPaths: related.map(\.path))
     }
+
+    /// Uygulamaya bağlı artık öğesi (taze tarama sonucu gibi).
+    static func leftover(_ url: URL, app: CleanItem, bundleID: String, match: LeftoverMatch = .bundleID,
+                         key: String? = nil) -> CleanItem {
+        CleanItem(category: .apps, name: url.lastPathComponent, path: url.path, allocatedBytes: 10,
+                  risk: match == .bundleID ? .green : .yellow, method: .trash, preselect: false,
+                  parentAppID: app.id, leftoverMatch: match, appBundleID: bundleID, matchedName: key)
+    }
 }
 
 struct PathProcesses: ProcessListing {
@@ -198,30 +206,39 @@ struct AppTrasherTests {
                 selfBundleID: selfBundleID, mover: try AppFixture.mover(t, counter: moved))
     }
 
-    @Test("uygulama ve artıkları birlikte taşınır; paylaşılan grup ve adla eşleşen kalır")
+    @Test("uygulama ve seçilen artık öğeleri taşınır (uygulama önce); seçilmeyen ve paylaşılan kalır")
     func moveWithLeftovers() async throws {
         let t = try TempTree()
         let (apps, p) = try AppFixture.setup(t)
-        let foo = try AppFixture.app(t, in: apps, "Foo", id: "com.example.foo")
-        let caches = try t.dir("Library/Caches/com.example.foo")
-        let prefs = try t.file("Library/Preferences/com.example.foo.plist")
-        let group = try t.dir("Library/Group Containers/ABCDE12345.com.example.foo")
+        let id = "com.example.foo"
+        // ~/Applications'taki paket (derinlik 4), ana klasördeki gizli artıktan (derinlik 3) derin: yine önce taşınır.
+        let foo = try AppFixture.app(t, in: t.home.appending(path: "Applications"), "Foo", id: id)
+        let caches = try t.dir("Library/Caches/\(id)")
+        let prefs = try t.file("Library/Preferences/\(id).plist")
+        let group = try t.dir("Library/Group Containers/ABCDE12345.\(id)")
+        let dot = try t.dir(".foo")
         let shared = try t.dir("Library/Group Containers/UBF8T346G9.Office")
-        let byName = try t.dir("Library/Application Support/Foo")
+        let unselected = try t.dir("Library/Logs/\(id)")
         let moved = Counter()
         let tr = try trasher(p, t, moved: moved)
-        let item = AppFixture.appItem(foo, related: [caches, prefs, group])
-
-        let dry = await tr.trash([item])
-        #expect(dry.refused.isEmpty, "\(dry.refused)")
+        let app = AppFixture.appItem(foo)
+        let left = [caches, prefs, group].map { AppFixture.leftover($0, app: app, bundleID: id) }
+            + [AppFixture.leftover(dot, app: app, bundleID: id, match: .name, key: "foo1")]
+        // Adı eşleşmeyen anahtarla (".foo" ~ "foo1") ad tabanlı artık reddedilir.
+        let scan = [app] + left
+        let dry = await tr.trash(scan)
+        #expect(dry.refused.map(\.path) == [dot.path], "\(dry.refused)")
         #expect(dry.done.count == 4 && moved.n == 0 && t.exists(foo))
 
-        let r = await tr.trash([item], dryRun: false)
+        let fooDot = try t.dir(".fooapp-cli")
+        let nameItem = AppFixture.leftover(fooDot, app: app, bundleID: id, match: .name, key: "fooapp")
+        let scan2 = [left[2], app, left[0], left[1], nameItem, AppFixture.leftover(unselected, app: app, bundleID: id)]
+        let r = await tr.trash(Array(scan2.prefix(5)), dryRun: false, scanItems: scan2)
         #expect(r.refused.isEmpty, "\(r.refused)")
-        #expect(r.done.map(\.path) == [foo.path, caches.path, prefs.path, group.path])
-        #expect(r.totalBytes == 1000)
-        for u in [foo, caches, prefs, group] { #expect(!t.exists(u)) }
-        for u in [shared, byName] { #expect(t.exists(u)) }
+        #expect(r.done.first?.path == foo.path)
+        #expect(Set(r.done.map(\.path)) == [foo.path, caches.path, prefs.path, group.path, fooDot.path])
+        for u in [foo, caches, prefs, group, fooDot] { #expect(!t.exists(u)) }
+        for u in [shared, unselected, dot] { #expect(t.exists(u)) }
         #expect(r.done.allSatisfy { $0.detail?.contains("FakeTrash") == true })
     }
 
@@ -297,18 +314,26 @@ struct AppTrasherTests {
         for u in [foo, ssh, docs, otherCache, terminal, cacheDir, homeApp] { #expect(t.exists(u)) }
     }
 
-    @Test("taşıma izin hatası düzgün raporlanır, artıklara dokunulmaz")
+    @Test("uygulama izin hatası (CLI, yetkili taşıyıcı yok): Uygulama Yönetimi metni; bağlı artık atlanır")
     func permissionErrorOnMove() async throws {
         let t = try TempTree()
         let (apps, p) = try AppFixture.setup(t)
         let foo = try AppFixture.app(t, in: apps, "Foo", id: "com.example.foo")
         let caches = try t.dir("Library/Caches/com.example.foo")
+        let other = try t.dir("Library/Caches/x")
         let tr = Trasher(policy: p, commands: FakeCommands(), processes: PathProcesses(), selfExecutable: nil,
                          selfBundleID: nil, mover: { _ in throw CocoaError(.fileWriteNoPermission) })
-        let r = await tr.trash([AppFixture.appItem(foo, related: [caches])], dryRun: false)
+        let app = AppFixture.appItem(foo)
+        let left = AppFixture.leftover(caches, app: app, bundleID: "com.example.foo")
+        let r = await tr.trash([app, left], dryRun: false)
         #expect(r.done.isEmpty)
-        #expect(r.refused.count == 1 && r.refused[0].reason.contains("izin yok"), "\(r.refused)")
+        let reasons = Dictionary(uniqueKeysWithValues: r.refused.map { ($0.path, $0.reason) })
+        #expect(reasons[foo.path] == Trasher.appManagementRefusal, "\(r.refused)")
+        #expect(reasons[caches.path] == Trasher.appFailedSkip)
         #expect(t.exists(foo) && t.exists(caches))
+        // Uygulama dışı öğenin izin hatası eski metinle.
+        let r2 = await tr.trash([CleanItem(category: .caches, name: "x", path: other.path, allocatedBytes: 1, risk: .green)], dryRun: false)
+        #expect(r2.refused.first?.reason.contains("izin yok") == true)
     }
 }
 
@@ -359,17 +384,25 @@ struct AppsScannerTests {
         ))
         ctx.pathPolicy = policy
         let items = try await AppsScanner(binDirectories: [bin]).scan(ctx)
-        let byName = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0) })
+        let appItems = items.filter { !$0.isLeftover }
+        let leftoverItems = items.filter(\.isLeftover)
+        let byName = Dictionary(uniqueKeysWithValues: appItems.map { ($0.name, $0) })
         #expect(Set(byName.keys) == ["Old", "Never", "Recent", "Running", "Cli", "Active", "RootOwned", "HomeApp"])
         #expect(items.allSatisfy { $0.category == .apps && !$0.isDefaultSelected })
 
         let o = try #require(byName["Old"])
         #expect(o.risk == .yellow && o.lockReason == nil && o.dateSignal == .opened(days: 200))
-        #expect(o.relatedPaths?.count == 3, "\(o.relatedPaths ?? [])")
-        #expect(o.relatedPaths?.contains { $0.contains("UBF8T346G9") || $0.hasSuffix("Application Support/Old") } == false)
-        #expect(o.allocatedBytes > 100_000)
+        #expect(o.relatedPaths == nil)
+        let oLeft = leftoverItems.filter { $0.parentAppID == o.id }
+        let oExact = oLeft.filter { $0.leftoverMatch == .bundleID }
+        #expect(oExact.count == 3, "\(oLeft.map(\.path))")
+        #expect(oExact.allSatisfy { $0.risk == .green && $0.preselect == false && !$0.isDefaultSelected && $0.appBundleID == "com.example.old" })
+        #expect(!oLeft.contains { $0.path.contains("UBF8T346G9") })
+        // "Old" 3 karakter: ad tabanlı aramaya girmez.
+        #expect(!oLeft.contains { $0.leftoverMatch == .name })
+        #expect(o.allocatedBytes < 100_000 && (o.leftoverBytes ?? 0) > 100_000)
         #expect(o.note?.contains("App Store") == true && o.note?.contains("Yeniden indirilir") == true)
-        #expect(o.note?.contains("adla eşleşen, alınmadı: ~/Library/Application Support/Old") == true)
+        #expect(o.note?.contains("artıklar: 3 kesin, 0 ad benzerliği") == true)
 
         let n = try #require(byName["Never"])
         #expect(n.risk == .yellow && n.dateSignal == .unknown && n.relatedPaths == nil)
@@ -387,7 +420,9 @@ struct AppsScannerTests {
         let r = await tr.trash(items)
         #expect(Set(r.done.filter { $0.detail == nil }.map(\.path)) == [old.path, never.path, homeApp.path])
         #expect(r.done.filter { $0.detail == "artık" }.count == 3)
-        #expect(r.refused.count == 5)
+        // 5 kilitli/bilgi uygulama + Active'in kilitli kesin artığı.
+        #expect(r.refused.count == 6, "\(r.refused)")
+        #expect(leftoverItems.first { $0.path.hasSuffix("com.example.active.plist") }?.lockReason?.hasPrefix("uygulama kilitli") == true)
         _ = recent
     }
 
