@@ -65,7 +65,7 @@ struct OverviewView: View {
             Text("Güvenle temizlenebilir").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg2)
             Text(Fmt.bytes(model.cleanableBytes))
                 .font(.system(size: 42, weight: .bold, design: .rounded)).foregroundStyle(Theme.ok).monospacedDigit()
-            Text("Yalnız kendini yeniden oluşturan öğeler sayıldı. Sarı ve kırmızılar senin onayını bekler; kullanımdakiler kilitli.")
+            Text("Yalnız kendini yeniden oluşturan öğeler sayıldı. Son 30 günde kullandığın projelerin artıkları, sarı ve kırmızılar senin onayını bekler; kullanımdakiler kilitli.")
                 .foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 420, alignment: .leading)
             Button {
                 model.selection = SelectionState(defaultsFrom: model.items)
@@ -85,7 +85,7 @@ struct OverviewView: View {
     private func card(_ info: CategoryInfo) -> some View {
         let its = model.items.filter { $0.category == info.category }
         let rc = Summaries.riskCounts(its)
-        let green = its.filter { model.selection.effective($0).risk == .green && model.selection.isSelectable($0) }
+        let green = its.filter { model.selection.effective($0).isDefaultSelected && model.selection.isSelectable($0) }
         let isApp = info.category == .apps
         return Button { ui.section = .category(info.category) } label: {
             VStack(alignment: .leading, spacing: 8) {

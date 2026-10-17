@@ -26,6 +26,15 @@ import Testing
         #expect(m.disk?.availableBytes == 900)
     }
 
+    @Test func cleanableMatchesSmartSelection() async {
+        // Son 30 günde kullanılan proje artığı: yeşil ama varsayılan seçili değil; "güvenle temizlenebilir"e girmez.
+        let old = item("old", cat: .projectArtifacts, bytes: 300), recent = item("recent", cat: .projectArtifacts, bytes: 700, preselect: false)
+        let (m, _, _) = make(items: [old, recent], clock: Clock(t0))
+        await m.startScan()
+        #expect(m.cleanableBytes == 300)
+        #expect(m.selection.selectedIDs == [old.id])
+    }
+
     @Test func scanAppliesDefaultSelection() async {
         let g = item("g"), l = item("l", lock: "k"), r = item("r", risk: .red)
         let (m, _, _) = make(items: [g, l, r], clock: Clock(t0))

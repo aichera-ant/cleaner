@@ -52,7 +52,7 @@ public enum Summaries {
 
     /// "Güvenle temizlenebilir": yeşil, kilitsiz, temizlenebilir öğeler (tutulacak kopya hariç).
     public static func cleanableBytes(_ items: [CleanItem], selection: SelectionState = SelectionState()) -> UInt64 {
-        items.filter { selection.effective($0).risk == .green && selection.isSelectable($0) }
+        items.filter { selection.effective($0).isDefaultSelected && selection.isSelectable($0) }
             .reduce(0) { $0 &+ $1.allocatedBytes }
     }
 
