@@ -7,6 +7,7 @@ import SwiftUI
 struct CleanerApp: App {
     @State private var model: AppModel
     @State private var ui = UIState()
+    @State private var perms = PermissionModel(probe: LivePermissionProbe())
 
     init() {
         // Dataless (yalnız bulutta duran) dosyalar bu süreçte okunarak indirilemez.
@@ -22,10 +23,12 @@ struct CleanerApp: App {
 
     var body: some Scene {
         WindowGroup("Cleaner") {
-            RootView(model: model, ui: ui)
+            RootView(model: model, ui: ui, perms: perms)
+                .onAppear { if perms.shouldPresentOnLaunch { ui.sheet = .permissions } }
                 .frame(minWidth: 760, minHeight: 540)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     model.refreshDisk()
+                    perms.refresh()
                 }
                 .onReceive(Timer.publish(every: 15, on: .main, in: .common).autoconnect()) { _ in
                     model.refreshDisk()

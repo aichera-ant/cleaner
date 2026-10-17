@@ -6,6 +6,7 @@ import SwiftUI
 struct SheetLayer: View {
     let model: AppModel
     let ui: UIState
+    let perms: PermissionModel
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -21,6 +22,11 @@ struct SheetLayer: View {
                     StaleSheet(onCancel: { ui.sheet = nil }, onRescan: {
                         ui.sheet = nil
                         Task { await model.startScan() }
+                    })
+                case .permissions:
+                    PermissionsSheet(perms: perms, onContinue: {
+                        perms.markSeen()
+                        ui.sheet = nil
                     })
                 case .nothingToClean:
                     NothingSheet(onClose: { ui.sheet = nil }, onRescan: {
@@ -39,6 +45,7 @@ struct SheetLayer: View {
             let r = await model.confirmMove(plan)
             ui.sheet = nil
             if model.phase != .result, r == .needsRescan { ui.sheet = .stale }
+            if ui.pendingPermissions { ui.pendingPermissions = false; ui.sheet = .permissions }
         }
     }
 }

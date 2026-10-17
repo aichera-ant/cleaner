@@ -5,17 +5,25 @@ import SwiftUI
 struct RootView: View {
     let model: AppModel
     let ui: UIState
+    let perms: PermissionModel
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(model: model, ui: ui)
+            SidebarView(model: model, ui: ui, perms: perms)
                 .frame(width: 224)
             Divider()
             MainPane(model: model, ui: ui)
         }
         .background(Theme.window)
-        .overlay { SheetLayer(model: model, ui: ui) }
+        .overlay { SheetLayer(model: model, ui: ui, perms: perms) }
         .background(WindowConfigurator())
+        .onChange(of: model.outcome) { _, o in
+            // Uygulama Yönetimi kaynaklı ret görülürse işaret kalkar ve ekran yeniden önerilir.
+            guard let o else { return }
+            if perms.noteRefusals((o.refused + o.skipped).map { (reason: $0.reason, path: $0.path) }) {
+                ui.pendingPermissions = true
+            }
+        }
     }
 }
 

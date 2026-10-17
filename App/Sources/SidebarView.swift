@@ -5,6 +5,7 @@ import SwiftUI
 struct SidebarView: View {
     let model: AppModel
     let ui: UIState
+    let perms: PermissionModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,6 +30,8 @@ struct SidebarView: View {
                 }
                 .padding(.horizontal, 10).padding(.bottom, 12)
             }
+            PermissionsRow(perms: perms) { ui.sheet = .permissions }
+                .padding(.horizontal, 10).padding(.bottom, 6)
             DiskFooter(disk: model.disk)
         }
         .background(SidebarBackground())

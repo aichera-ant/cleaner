@@ -10,12 +10,24 @@ enum SnapshotRunner {
     static func run(into dir: String) async {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         for width in [1100, 800] {
-            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama"] {
+            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler"] {
                 let (model, ui) = await prepare(name)
-                render(RootView(model: model, ui: ui), width: width, to: "\(dir)/\(name)-\(width).png")
+                render(RootView(model: model, ui: ui, perms: perms(for: name)), width: width, to: "\(dir)/\(name)-\(width).png")
                 model.cancelScan()
             }
         }
+    }
+
+    private struct SampleProbe: PermissionProbe {
+        func fullDiskAccess() -> ProbeResult { .granted }
+        func automation(askUser: Bool) -> ProbeResult { .denied }
+    }
+
+    private static func perms(for name: String) -> PermissionModel {
+        let d = UserDefaults(suiteName: "cleaner-snapshot-perms")!
+        d.removePersistentDomain(forName: "cleaner-snapshot-perms")
+        d.set(true, forKey: PermissionModel.seenKey)
+        return PermissionModel(probe: SampleProbe(), defaults: d)
     }
 
     private static func prepare(_ name: String) async -> (AppModel, UIState) {
@@ -45,6 +57,8 @@ enum SnapshotRunner {
             if case .plan(let p) = model.requestConfirm() {
                 if name == "onizleme" { ui.sheet = .confirm(p) } else { await model.confirmMove(p) }
             }
+        case "izinler":
+            ui.sheet = .permissions
         default: break
         }
         return (model, ui)
