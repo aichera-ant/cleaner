@@ -69,6 +69,40 @@ public enum LeftoverNames {
         return nil
     }
 
+    /// Ana klasördeki `~/.<x>` bağımsız bir komut satırı aracının kurulum klasörü mü (ör. `~/.deno`)? (kullanıcı
+    /// kararı, 2026-10-17: böyle klasör, aynı adlı uygulama kurulu olsa bile, hiçbir zaman ad artığı adayı olmaz.)
+    ///
+    /// Koşul: doğrudan `bin/` alt klasörü (bağlantı değil) en az bir bağımsız çalıştırılabilir içeriyor: çalıştırma
+    /// biti olan sıradan dosya ya da çözülünce böyle bir dosyaya giden ve hedefi bir uygulama paketinin (`*.app`)
+    /// içinde olmayan bağlantı. Hedefi uygulama paketine giden bağlantılar uygulamanın kendi CLI'ıdır (bağımsız
+    /// değil; `InstalledApps.commandMatches` iç komut kuralı: kırmızı + not). Yalnız ad listesi, `lstat`, `stat` ve
+    /// `realpath`; içerik okunmaz.
+    public static let standaloneCLIReason = "bağımsız komut satırı aracı klasörü (içinde bin/ var; ad artığı olmaz)"
+
+    public static func isStandaloneCLIFolder(_ url: URL) -> Bool {
+        let bin = url.appending(path: "bin")
+        var st = stat()
+        guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
+              lstat(bin.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: bin.path)
+        else { return false }
+        func executableFile(_ s: stat) -> Bool {
+            (s.st_mode & S_IFMT) == S_IFREG && (s.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0
+        }
+        for n in names.prefix(10_000) where !n.hasPrefix(".") {
+            let p = bin.appending(path: n).path
+            var est = stat()
+            guard lstat(p, &est) == 0 else { continue }
+            if executableFile(est) { return true }
+            guard (est.st_mode & S_IFMT) == S_IFLNK, let target = PathUtil.realPath(p) else { continue }
+            var tst = stat()
+            guard stat(target, &tst) == 0, executableFile(tst) else { continue }
+            let insideApp = target.split(separator: "/").contains { $0.lowercased().hasSuffix(".app") }
+            if !insideApp { return true }
+        }
+        return false
+    }
+
     /// Ad artığı klasörün kendisi ya da doğrudan çocuğu `.git` içeriyor mu? Yalnız `lstat` ile varlık; içerik okunmaz.
     public static func containsGitRepository(_ url: URL) -> Bool {
         func has(_ dir: URL) -> Bool {

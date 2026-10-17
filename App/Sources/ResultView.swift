@@ -1,3 +1,4 @@
+import AppKit
 import CleanerAppCore
 import CleanerKit
 import SwiftUI
@@ -5,19 +6,34 @@ import SwiftUI
 struct ResultView: View {
     let model: AppModel
     let ui: UIState
+    let perms: PermissionModel
 
     var body: some View {
         Scroller {
             if let o = model.outcome {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .center, spacing: 14) {
-                        CategoryTile(tint: o.doneCount > 0 ? Theme.ok : Theme.warn,
-                                     symbol: o.doneCount > 0 ? "checkmark" : "exclamationmark.triangle", size: 44)
+                        CategoryTile(tint: o.failedCount == 0 ? Theme.ok : (o.doneCount > 0 ? Theme.warn : Theme.bad),
+                                     symbol: o.failedCount == 0 ? "checkmark" : "exclamationmark.triangle", size: 44)
                         VStack(alignment: .leading, spacing: 2) {
+                            if o.failedCount > 0 {
+                                Text(o.headline).font(.system(size: 20, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Theme.bad)
+                            }
                             Text("Kazanılan alan").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.fg2)
-                            Text(Fmt.bytes(o.freedBytes)).font(.system(size: 40, weight: .bold, design: .rounded))
+                            Text(Fmt.bytes(o.freedBytes)).font(.system(size: o.failedCount > 0 ? 30 : 40, weight: .bold, design: .rounded))
                                 .foregroundStyle(o.freedBytes > 0 ? Theme.ok : .primary).monospacedDigit()
                         }
+                    }
+                    if o.needsFullDiskAccess {
+                        fullDiskAccessBanner
+                    }
+                    // Ret nedenleri üstte: kullanıcı önce neyin taşınamadığını görür.
+                    if !o.refusedOther.isEmpty {
+                        section("Taşınamadı · \(o.refusedOther.count)", tint: Theme.bad, lines: o.refusedOther)
+                    }
+                    if !o.appSkipGroups.isEmpty {
+                        skippedLeftovers(o.appSkipGroups)
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         if o.trashedCount > 0 {
@@ -29,12 +45,6 @@ struct ResultView: View {
                     }
                     .foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
 
-                    if !o.refusedOther.isEmpty {
-                        section("Reddedilenler · \(o.refusedOther.count)", tint: Theme.bad, lines: o.refusedOther)
-                    }
-                    if !o.appSkipGroups.isEmpty {
-                        skippedLeftovers(o.appSkipGroups)
-                    }
                     if !o.skipped.isEmpty {
                         section("Atlananlar · \(o.skipped.count)", tint: Theme.warn, lines: o.skipped)
                     }
@@ -51,6 +61,22 @@ struct ResultView: View {
                 }
                 .padding(.horizontal, 24).padding(.vertical, 22)
             }
+        }
+    }
+
+    /// Tam Disk Erişimi kaynaklı ret: izin durumunu (izinler ekranındaki tespit) söyler, Sistem Ayarları'na götürür.
+    private var fullDiskAccessBanner: some View {
+        let granted = perms.status(.fullDiskAccess) == .granted
+        let text = granted
+            ? "Bazı öğeler macOS uygulama verisi koruması yüzünden taşınamadı. Tam Disk Erişimi verilmiş görünüyor; "
+                + "Cleaner yeniden derlendiyse izin kaybolmuş olabilir. Ayarlardan kapatıp açın, sonra Cleaner'ı yeniden başlatın."
+            : "Bazı öğeler macOS uygulama verisi koruması yüzünden taşınamadı: Cleaner'ın Tam Disk Erişimi yok. "
+                + "İzni verip Cleaner'ı yeniden başlattıktan sonra yeniden tarayın."
+        return Banner(symbol: "lock.shield", tint: Theme.bad, text: Text(text)) {
+            Button("Tam Disk Erişimi'ni aç") {
+                if let url = URL(string: PermissionKind.fullDiskAccess.settingsURL) { NSWorkspace.shared.open(url) }
+            }
+            .buttonStyle(SoftButtonStyle())
         }
     }
 

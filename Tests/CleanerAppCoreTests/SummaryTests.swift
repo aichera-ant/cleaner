@@ -70,6 +70,26 @@ import Testing
         #expect(o.skipped.first?.name == "q")
     }
 
+    @Test func outcomeHeadlineAndFullDiskAccess() {
+        let a = item("a", bytes: 300), b = item("b", bytes: 200), c = item("c", bytes: 50)
+        let ok = TrashOutcome(report: TrashReport(dryRun: false, done: [makeDone(id: a.id, path: a.path, bytes: 300, action: "trashed")],
+                                                  refused: []), items: [a])
+        #expect(ok.failedCount == 0 && ok.headline == "Temizlik tamamlandı" && !ok.needsFullDiskAccess)
+
+        let fda = "artık taşınamadı: \(Trasher.fullDiskAccessMarker) (macOS uygulama verisi koruması; parola değil)"
+        let mixed = TrashOutcome(report: TrashReport(
+            dryRun: false, done: [makeDone(id: a.id, path: a.path, bytes: 300, action: "trashed")],
+            refused: [.init(id: b.id, path: b.path, reason: fda), .init(id: c.id, path: c.path, reason: "kilitli")]), items: [a, b, c])
+        #expect(mixed.failedCount == 2 && mixed.headline == "2 öğe taşınamadı" && mixed.needsFullDiskAccess)
+
+        let none = TrashOutcome(report: TrashReport(dryRun: false, done: [],
+                                                    refused: [.init(id: c.id, path: c.path, reason: "taşınamadı: iptal")]), items: [c])
+        #expect(none.headline == "Öğe taşınamadı" && !none.needsFullDiskAccess)
+        let none2 = TrashOutcome(report: TrashReport(dryRun: false, done: [], refused: [
+            .init(id: b.id, path: b.path, reason: "x"), .init(id: c.id, path: c.path, reason: "y")]), items: [b, c])
+        #expect(none2.headline == "2 öğenin hiçbiri taşınamadı")
+    }
+
     @Test func progressState() {
         var p = ScanProgressState()
         p.apply(.init(scanner: "xcode", categories: [.xcode], event: .started, completed: 0, total: 2))

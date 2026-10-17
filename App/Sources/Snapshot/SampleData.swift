@@ -123,6 +123,8 @@ struct SampleTrashService: TrashService {
             if let data = try? JSONSerialization.data(withJSONObject: obj),
                let d = try? JSONDecoder().decode(TrashReport.Done.self, from: data) { done.append(d) }
         }
+        refused.append(.init(id: "fda", path: "\(SampleData.home)/Library/Containers/com.microsoft.Word",
+                             reason: "artık taşınamadı: \(Trasher.fullDiskAccessMarker) (macOS uygulama verisi koruması; parola değil)"))
         let skipped = [TrashReport.Refused(id: "x", path: "\(SampleData.home)/Documents/projeler/ornekproje/node_modules/.cache",
                                            reason: "üst öğeyle birlikte taşınıyor: ~/Documents/projeler/ornekproje/node_modules")]
         return TrashReport(dryRun: dryRun, done: done, refused: refused, skipped: skipped)

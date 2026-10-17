@@ -391,6 +391,9 @@ public struct PathPolicy: Sendable {
         let isDir = (st.st_mode & S_IFMT) == S_IFDIR
         guard isDir || (st.st_mode & S_IFMT) == S_IFREG else { return "klasör ya da dosya değil" }
         if let reason = LeftoverNames.deniedReason(entry: name, parent: rel) { return reason }
+        if rel.isEmpty, isDir, LeftoverNames.isStandaloneCLIFolder(url) {
+            return LeftoverNames.standaloneCLIReason
+        }
         // `.<ad>-*` önek eşleşmesi yalnız klasörde; dosyada yalnız tam ad.
         guard LeftoverNames.matches(entry: name, parent: rel, key: key, isDirectory: isDir)
         else { return "artık adı uygulama adıyla eşleşmiyor" }

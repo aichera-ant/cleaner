@@ -35,13 +35,24 @@ private let note = "İçindeki `zeplin` komutu da silinir; terminalde artık ça
 
 @Suite("Ad artığı: kendi içindeki komut")
 struct LeftoverInternalCommandScanTests {
-    @Test("~/.<x>/bin içindeki kendi komutu: aday kırmızı, seçili değil, notlu")
+    @Test("~/.<x>/bin içindeki sıradan çalıştırılabilir: bağımsız CLI, aday değil (İP3 kararı)")
     func ownBinInside() async throws {
         let t = try TempTree()
         let (apps, p) = try AppFixture.setup(t)
         try AppFixture.app(t, in: apps, "Zeplin", id: "io.zeplin.osx")
         let dot = try t.dir(".zeplin")
         try exe(t, ".zeplin/bin/zeplin")
+        let items = try await scan(t, fresh(t, p))
+        #expect(!items.contains { $0.path == dot.path })
+    }
+
+    @Test("~/.<x>/bin içindeki kendi komutu uygulama paketine bağlantı: aday kırmızı, seçili değil, notlu")
+    func ownBinLinkedToApp() async throws {
+        let t = try TempTree()
+        let (apps, p) = try AppFixture.setup(t)
+        let app = try AppFixture.app(t, in: apps, "Zeplin", id: "io.zeplin.osx")
+        let dot = try t.dir(".zeplin")
+        try link(t, ".zeplin/bin/zeplin", to: app.appending(path: "Contents/MacOS/Zeplin"))
         let items = try await scan(t, fresh(t, p))
         let i = try #require(items.first { $0.path == dot.path }, "aday olmalı")
         #expect(i.risk == .red && i.preselect == false && !i.isDefaultSelected)
@@ -189,7 +200,11 @@ struct LeftoverInternalCommandTrashTests {
 
     func named(_ u: URL, _ app: CleanItem, red: Bool) -> CleanItem {
         var i = AppFixture.leftover(u, app: app, bundleID: "io.zeplin.osx", match: .name, key: "zeplin")
-        if red { i.risk = .red }
+        if red {
+            // Taramanın kırmızı iç komut öğesine yazdığı not (taşıma anında aranır).
+            i.risk = .red
+            i.note = AppsScanner.internalCommandNote(["zeplin"])
+        }
         return i
     }
 
@@ -199,7 +214,8 @@ struct LeftoverInternalCommandTrashTests {
         let (apps, p0) = try AppFixture.setup(t)
         let appURL = try AppFixture.app(t, in: apps, "Zeplin", id: "io.zeplin.osx")
         let app = AppFixture.appItem(appURL)
-        try exe(t, ".zeplin/bin/zeplin")
+        // Uygulamanın kendi CLI'ı (paket içine bağlantı); sıradan çalıştırılabilir bağımsız CLI sayılırdı.
+        try link(t, ".zeplin/bin/zeplin", to: appURL.appending(path: "Contents/MacOS/Zeplin"))
         let p = fresh(t, p0)
         let moved = Counter()
         let dot = t.home.appending(path: ".zeplin")

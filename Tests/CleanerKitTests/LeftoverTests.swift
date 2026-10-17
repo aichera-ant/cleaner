@@ -389,8 +389,9 @@ struct BatchPrivilegedTests {
         let a = try t.dir("Apps/A.app", in: t.root)
         let b = try t.dir("Apps/B.app", in: t.root)
         let bin = try t.dir("Bin", in: t.root)
-        let calls = Counter()
-        let rec = FinderRecycler(timeout: 5, sender: { _, _ in Issue.record("tekli gönderilmemeli"); return nil },
+        let calls = Counter(), singles = Counter()
+        // Toplu olaydan sonra yerinde kalan B için tek öğeli olaya yedek düşülür (İP3); bu sahte de taşımaz.
+        let rec = FinderRecycler(timeout: 5, sender: { u, _ in singles.hit(u.lastPathComponent); return nil },
                                  batchSender: { urls, _ in
                                      calls.hit()
                                      #expect(!Thread.isMainThread)
@@ -398,6 +399,7 @@ struct BatchPrivilegedTests {
                                  })
         let r = await rec.recycle([a, b])
         #expect(calls.n == 1)
+        #expect(singles.log == ["B.app"])
         if case .success = try #require(r[a]) {} else { Issue.record("A başarılı olmalıydı") }
         if case .failure(let e) = try #require(r[b]) { #expect(e as? FinderRecycleError == .stillExists) } else { Issue.record("B yerinde") }
 

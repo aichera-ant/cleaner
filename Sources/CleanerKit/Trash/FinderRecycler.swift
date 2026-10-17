@@ -40,12 +40,24 @@ public struct FinderRecycler: Recycling {
         self.batchSender = batchSender ?? { urls, t in for u in urls { _ = try sender(u, t) } }
     }
 
-    /// Bütün yolları TEK Finder olayıyla taşır (Finder bir kez parola/Touch ID ister). Olaydan sonra her kaynak
-    /// ayrı ayrı `lstat` ile doğrulanır: kalkan başarılı (konum nil), yerinde duran `stillExists`. Olay hata ya da
-    /// zaman aşımı dönse bile (Finder bir kısmını taşımış olabilir) her yol ayrı ayrılır: kalkan başarılı, yerinde
-    /// duran o hatayla.
+    /// Birden çok yolu taşır.
+    ///
+    /// - Tek öğe: doğrudan TEK öğeli olay (gerçek Finder'la doğrulanmış biçim; toplu liste gönderilmez).
+    /// - Birden çok öğe: önce TEK toplu olay (Finder bir kez parola/Touch ID ister). Olaydan sonra her kaynak ayrı
+    ///   ayrı `lstat` ile doğrulanır: kalkan başarılı (konum nil). Olay hata dönse bile (Finder bir kısmını taşımış
+    ///   olabilir) kalkan başarılıdır.
+    /// - Yerinde kalanlar: toplu olay başarı dediği hâlde öğe duruyorsa (`stillExists`) ya da Finder genel bir hata
+    ///   döndüyse (`finderFailed`) kalan her öğe için TEK öğeli olaya sırayla yedek düşülür (her biri ayrı parola
+    ///   isteyebilir). Kullanıcı iptali, Otomasyon izni yok, Finder'a ulaşılamadı ve zaman aşımında yedek
+    ///   denenmez (kullanıcıya yeniden sorulmaz); yedek sırasında bunlardan biri gelirse kalanlar da o hatayla biter.
     public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
         guard !urls.isEmpty else { return [:] }
+        let log = TrashLog.logger
+        if urls.count == 1 {
+            let u = urls[0]
+            do { return [u: .success(try await recycle(u))] } catch { return [u: .failure(error)] }
+        }
+        log.info("Finder toplu olay gönderiliyor: \(urls.count, privacy: .public) öğe")
         let batchSender = self.batchSender
         let timeout = self.timeout
         let failure: FinderRecycleError? = await withCheckedContinuation { continuation in
@@ -58,29 +70,87 @@ public struct FinderRecycler: Recycling {
                 }
             }
         }
+        if let failure {
+            log.error("Finder toplu olay hatası: kod \(failure.code ?? 0, privacy: .public), \(failure.logText, privacy: .public)")
+        }
         var out: [URL: Result<URL?, any Error>] = [:]
+        var remaining: [URL] = []
         for u in urls {
-            out[u] = Self.itemExists(at: u) ? .failure(failure ?? FinderRecycleError.stillExists) : .success(nil)
+            if Self.itemExists(at: u) {
+                remaining.append(u)
+            } else {
+                out[u] = .success(nil)
+                log.info("Finder (toplu): taşındı \(u.path, privacy: .public)")
+            }
+        }
+        guard !remaining.isEmpty else { return out }
+        let batchError = failure ?? FinderRecycleError.stillExists
+        guard Self.fallsBackToSingle(after: batchError) else {
+            for u in remaining {
+                out[u] = .failure(batchError)
+                log.error("Finder (toplu): reddedildi \(u.path, privacy: .public): \(batchError.logText, privacy: .public)")
+            }
+            return out
+        }
+        log.notice("Finder toplu olayından sonra \(remaining.count, privacy: .public) öğe yerinde; tek öğeli olaya yedek düşülüyor")
+        var stop: FinderRecycleError?
+        for u in remaining {
+            if let stop {
+                out[u] = .failure(stop)
+                log.error("Finder (yedek): denenmedi \(u.path, privacy: .public): \(stop.logText, privacy: .public)")
+                continue
+            }
+            do {
+                out[u] = .success(try await recycle(u))
+            } catch {
+                let e = Self.mapThrown(error)
+                out[u] = .failure(e)
+                if Self.stopsFallback(e) { stop = e }
+            }
         }
         return out
     }
 
+    /// Toplu olaydan sonra yerinde kalan öğeler için tek öğeli olaya düşülür mü?
+    static func fallsBackToSingle(after error: FinderRecycleError) -> Bool {
+        switch error {
+        case .stillExists, .finderFailed: true
+        case .userCancelled, .automationDenied, .finderUnavailable, .timedOut: false
+        }
+    }
+
+    /// Yedek sırasında bu hata gelirse kalan öğeler denenmez (kullanıcıya yeniden sorulmaz).
+    static func stopsFallback(_ error: FinderRecycleError) -> Bool { !fallsBackToSingle(after: error) }
+
     public func recycle(_ url: URL) async throws -> URL? {
         let sender = self.sender
         let timeout = self.timeout
+        let log = TrashLog.logger
+        log.info("Finder tek öğeli olay gönderiliyor: \(url.path, privacy: .public)")
         // Eşzamanlı (waitForReply) Apple Event ana iş parçacığında gönderilmez: yanıt beklerken (parola penceresi,
         // Otomasyon izni penceresi) arayüzü kilitler. Ayrı bir kuyrukta gönderilir, async arayüz bloklanmaz.
-        let resulting: URL? = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    continuation.resume(returning: try sender(url, timeout))
-                } catch {
-                    continuation.resume(throwing: error)
+        let resulting: URL?
+        do {
+            resulting = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        continuation.resume(returning: try sender(url, timeout))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } catch {
+            let e = Self.mapThrown(error)
+            log.error("Finder: reddedildi \(url.path, privacy: .public): kod \(e.code ?? 0, privacy: .public), \(e.logText, privacy: .public)")
+            throw e
         }
         // Finder başarı dönse bile kaynak yol hâlâ duruyorsa başarı sayılmaz.
-        if Self.itemExists(at: url) { throw FinderRecycleError.stillExists }
+        if Self.itemExists(at: url) {
+            log.error("Finder başarı döndü ama öğe yerinde: \(url.path, privacy: .public)")
+            throw FinderRecycleError.stillExists
+        }
+        log.info("Finder: taşındı \(url.path, privacy: .public)")
         return resulting
     }
 
@@ -127,7 +197,8 @@ public struct FinderRecycler: Recycling {
         return u
     }
 
-    /// OSStatus / Apple Event hata kodunu anlaşılır hataya çevirir.
+    /// OSStatus / Apple Event hata kodunu anlaşılır hataya çevirir. Bilinen kodlar (iptal, Otomasyon izni, zaman
+    /// aşımı, Finder yok) sade Türkçe metne döner; diğerlerinde Finder'ın kendi metni (`errs`) korunur.
     static func mapError(code: Int, message: String?) -> FinderRecycleError {
         switch code {
         case Int(userCanceledErr): // -128
@@ -139,15 +210,28 @@ public struct FinderRecycler: Recycling {
         case Int(procNotFound), Int(connectionInvalid): // -600, -609
             return .finderUnavailable
         default:
-            return .finderFailed(code: code, message: message?.isEmpty == false ? message : nil)
+            let m = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .finderFailed(code: code, message: m?.isEmpty == false ? m : nil)
         }
     }
 
-    /// Gönderim sırasında atılan hatayı eşler (NSAppleEventDescriptor `NSOSStatusErrorDomain` ile atar).
+    /// Gönderim sırasında atılan hatayı eşler (NSAppleEventDescriptor `NSOSStatusErrorDomain` ile atar). Hata
+    /// metni yalnız gerçek bir açıklama varsa alınır (Cocoa'nın genel "işlem tamamlanamadı" metni değil).
     static func mapThrown(_ error: any Error) -> FinderRecycleError {
         if let e = error as? FinderRecycleError { return e }
         let ns = error as NSError
-        return mapError(code: ns.code, message: ns.localizedFailureReason ?? ns.localizedDescription)
+        return mapError(code: ns.code, message: thrownMessage(ns))
+    }
+
+    /// Atılan hatadaki Finder/Apple Event açıklaması (`errs` karşılığı); yoksa nil.
+    static func thrownMessage(_ ns: NSError, depth: Int = 0) -> String? {
+        for k in [NSLocalizedFailureReasonErrorKey, "NSAppleScriptErrorMessage", "NSAppleEventErrorString"] {
+            if let m = ns.userInfo[k] as? String, !m.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return m }
+        }
+        if depth < 3, let under = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return thrownMessage(under, depth: depth + 1)
+        }
+        return nil
     }
 
     /// Yol (sembolik bağ izlenmeden) hâlâ var mı.
@@ -164,9 +248,14 @@ public struct FinderRecycler: Recycling {
         do {
             reply = try event.sendEvent(options: [.waitForReply, .canInteract], timeout: timeout)
         } catch {
-            throw mapThrown(error)
+            let e = mapThrown(error)
+            TrashLog.logger.error("Finder toplu olay gönderilemedi: kod \(e.code ?? 0, privacy: .public), \(e.logText, privacy: .public)")
+            throw e
         }
-        if let error = replyError(reply) { throw error }
+        if let error = replyError(reply) {
+            TrashLog.logger.error("Finder toplu yanıt hatası: errn \(error.code ?? 0, privacy: .public), errs \(error.finderMessage ?? "-", privacy: .public)")
+            throw error
+        }
     }
 
     private static let sendDeleteEvent: Sender = { url, timeout in
@@ -175,9 +264,14 @@ public struct FinderRecycler: Recycling {
         do {
             reply = try event.sendEvent(options: [.waitForReply, .canInteract], timeout: timeout)
         } catch {
-            throw mapThrown(error)
+            let e = mapThrown(error)
+            TrashLog.logger.error("Finder olayı gönderilemedi: kod \(e.code ?? 0, privacy: .public), \(e.logText, privacy: .public)")
+            throw e
         }
-        if let error = replyError(reply) { throw error }
+        if let error = replyError(reply) {
+            TrashLog.logger.error("Finder yanıt hatası: errn \(error.code ?? 0, privacy: .public), errs \(error.finderMessage ?? "-", privacy: .public)")
+            throw error
+        }
         return resultingURL(from: reply)
     }
 }
@@ -191,6 +285,27 @@ public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
     case finderFailed(code: Int, message: String?)
     case stillExists
 
+    /// Apple Event / OSStatus hata kodu (biliniyorsa).
+    public var code: Int? {
+        switch self {
+        case .userCancelled: -128
+        case .automationDenied: -1743
+        case .timedOut: -1712
+        case .finderUnavailable: -600
+        case .finderFailed(let code, _): code
+        case .stillExists: nil
+        }
+    }
+
+    /// Finder'ın kendi hata metni (`errs`), varsa.
+    public var finderMessage: String? {
+        if case .finderFailed(_, let m) = self { return m }
+        return nil
+    }
+
+    /// Günlük için kısa metin.
+    var logText: String { errorDescription ?? "\(self)" }
+
     public var errorDescription: String? {
         switch self {
         case .userCancelled:
@@ -203,10 +318,31 @@ public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
         case .finderUnavailable:
             return "Finder'a ulaşılamadı; Finder'ın açık olduğundan emin olup yeniden deneyin"
         case let .finderFailed(code, message):
-            if let message { return "Finder taşıyamadı (\(code)): \(message)" }
-            return "Finder taşıyamadı (hata \(code))"
+            let base = Self.knownText(code) ?? "Finder taşıyamadı (hata \(code))"
+            if let message { return "\(base). Finder'ın mesajı: \(message)" }
+            return base
         case .stillExists:
             return "Finder işlemi bitirdi ama öğe hâlâ yerinde; taşınmış sayılmadı"
+        }
+    }
+
+    /// Bilinen Finder/Apple Event kodları için sade Türkçe metin.
+    static func knownText(_ code: Int) -> String? {
+        switch code {
+        case -10000: // errAEEventFailed
+            "Finder taşıyamadı (hata -10000): Finder işlemi reddetti; çoğunlukla izin ya da macOS koruması"
+        case -5000: // afpAccessDenied
+            "Finder taşıyamadı (hata -5000): erişim reddedildi"
+        case -54, -61: // permErr, wrPermErr
+            "Finder taşıyamadı (hata \(code)): yazma izni yok"
+        case -1728, -43: // errAENoSuchObject, fnfErr
+            "Finder öğeyi bulamadı (hata \(code)); taşınmış ya da silinmiş olabilir, yeniden tarayın"
+        case -47: // fBsyErr
+            "Finder taşıyamadı (hata -47): öğe kullanımda"
+        case -1708, -1700: // errAEEventNotHandled, errAECoercionFail
+            "Finder isteği anlamadı (hata \(code))"
+        default:
+            nil
         }
     }
 }
