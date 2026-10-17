@@ -11,12 +11,13 @@ import Foundation
 ///     kapsayıcısında `group.<id>` / `<TAKIM>.<id>`). Yeşil, `preselect = false` (arayüz uygulama seçilince işaretler).
 ///   - Ad tabanlı (`.name`): `LeftoverNames` kuralları (yalnız izinli klasörlerin doğrudan çocuğu, genel ad yok,
 ///     başka kurulu uygulamanın adı ya da bundle id'siyle çakışan yok, sembolik bağlantı yok). Sarı, `preselect = false`.
-///   - Uygulama kilitliyse (çalışıyor, Cleaner, komut satırı, yakın kullanım, yazılamıyor) ya da yakında açıldıysa
-///     (bilgi) artıkları da kilitlidir. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
-/// - Risk: çalışan, Cleaner'ın kendisi, komut satırından kullanılan, son `staleDays` günde artığı değişen ve
-///   yetkiyle de aşılamayan yazma sorunu olan (üst klasör salt okunur, başka kullanıcının paketi ...) paket kilitli;
-///   son `staleDays` günde açılan bilgi; geri kalanı (hiç açılmamış ya da uzun süredir açılmamış) sarı
-///   "Yeniden indirilir", seçili değil.
+///   - Uygulama kilitliyse (çalışıyor, Cleaner, yapısal ret) artıkları da kilitlidir; uygulama kırmızıysa (komut
+///     satırı bağlantısı) kesin artıklar da sarıdır. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
+/// - Kilit yalnız: çalışan, Cleaner'ın kendisi ve dar istisnanın yapısal reddi (`.rejected`, `.blocked`: iç içe,
+///   bağlantı, başka kullanıcının paketi ...). Kullanım işaretleri kilit değil, uyarıdır (karar kullanıcıda,
+///   `preselect = false`): komut satırı bağlantısı kırmızı, son `staleDays` günde açılan ya da Spotlight kaydı
+///   olmayıp artığı son `staleDays` günde değişen sarı. Geri kalanı (hiç açılmamış ya da uzun süredir açılmamış)
+///   sarı "Yeniden indirilir", seçili değil.
 /// - Uygulama Yönetimi koruması (`EPERM`) ya da root sahipliği yüzünden yazılamayan ama dar istisnanın diğer
 ///   bütün koşullarını sağlayan paket kilitlenmez: `needsAuthorization = true`, `preselect = false`, not
 ///   "macOS parola ya da Touch ID isteyecek". Yalnız `Trasher`'a yetkili taşıyıcı verilmişse taşınır.
@@ -24,7 +25,7 @@ public struct AppsScanner: Cleaner {
     public let id = "apps"
     public var categories: Set<Category> { [.apps] }
 
-    /// Bu kadar günden kısa sürede açılmış/kullanılmış uygulama önerilmez.
+    /// Bu kadar günden kısa sürede açılmış/kullanılmış uygulama uyarılı (sarı, seçili değil); kilitli değil.
     public var staleDays: Int
     /// Komut satırı bağlantılarının aranacağı klasörler. nil: PATH'teki yaygın klasörler.
     public var binDirectories: [URL]?
@@ -193,19 +194,16 @@ public struct AppsScanner: Cleaner {
         let bundleKey = PathUtil.key(PathUtil.canonical(bundle))
         let cliUse = cliLinks.first { PathUtil.isSameOrDescendant($0.target, of: bundleKey) }
 
+        // Kilit yalnız: çalışıyor, Cleaner'ın kendisi, dar istisnanın yapısal reddi. Kullanım işaretleri (komut
+        // satırı bağlantısı, yakın açılış, yakın kullanım izi) kilit değil, uyarıdır: karar kullanıcıda.
         var lock: String?
         var risk = Risk.yellow
         var needsAuthorization = false
+        var cautions: [String] = []
         if running.isRunning(bundle: bundle, bundleID: info.bundleID) || context.signals.processes.isRunning(info.name) {
             lock = "çalışıyor"
         } else if Self.isSelf(bundle: bundle, bundleID: info.bundleID) {
             lock = "Cleaner'ın kendisi"
-        } else if let cliUse {
-            lock = "Komut satırından kullanılıyor (\(cliUse.link))"
-        } else if let days = date.days, days <= staleDays {
-            risk = .info
-        } else if lastUsed == nil, let days = activityDays, days <= staleDays {
-            lock = "Spotlight kaydı yok ama son \(days) günde kullanılmış (ayar/önbellek değişti)"
         } else {
             switch policy.appBundleCheck(for: bundle) {
             case .rejected(let reason): lock = reason
@@ -217,11 +215,21 @@ public struct AppsScanner: Cleaner {
                 needsAuthorization = true
             }
         }
+        if lock == nil {
+            if let cliUse {
+                risk = .red
+                cautions.append("Terminaldeki `\(cliUse.link)` komutu bu uygulamaya bağlı; silersen komut çalışmaz")
+            }
+            if let days = date.days, days <= staleDays {
+                cautions.append("Son \(staleDays) günde açtın; kullanmaya devam ediyorsan silme")
+            } else if lastUsed == nil, let days = activityDays, days <= staleDays {
+                cautions.append("Spotlight kaydı yok ama son \(days) günde kullanılmış (ayar/önbellek değişti)")
+            }
+        }
 
-        var notes: [String] = []
-        if risk == .yellow && lock == nil { notes.append("Yeniden indirilir") }
+        var notes: [String] = cautions
+        if lock == nil && cautions.isEmpty { notes.append("Yeniden indirilir") }
         if needsAuthorization { notes.append("macOS parola ya da Touch ID isteyecek") }
-        if risk == .info, let days = date.days { notes.append("son \(days) günde açıldı") }
         notes.append(info.bundleID + (info.version.map { " \($0)" } ?? ""))
         if !leftovers.isEmpty || !named.isEmpty {
             notes.append("artıklar: \(leftovers.count) kesin, \(named.count) ad benzerliği")
@@ -244,14 +252,14 @@ public struct AppsScanner: Cleaner {
             lockReason: lock,
             note: notes.joined(separator: "; "),
             method: .trash,
-            preselect: needsAuthorization ? false : nil,
+            preselect: needsAuthorization || !cautions.isEmpty ? false : nil,
             needsAuthorization: needsAuthorization ? true : nil,
             leftoverBytes: leftovers.isEmpty ? nil : exactBytes
         )
 
-        // Artıklar uygulamanın durumunu izler: uygulama kilitliyse ya da yakında açıldıysa artıkları da kilitli.
+        // Artıklar uygulamanın kilidini izler (çalışıyor, Cleaner, yapısal ret). Uygulama kırmızıysa (komut satırı
+        // bağlantısı) artıkları en az sarı.
         let leftoverLock: String? = lock.map { "uygulama kilitli: \($0)" }
-            ?? (risk == .info ? "uygulama yakında açıldı (\(date.days.map { $0 == 0 ? "bugün" : "son \($0) gün" } ?? "yakın")); önce uygulamayı kaldırın" : nil)
         func leftoverItem(_ url: URL, parent: String, m: SizeMeasurement, match: LeftoverMatch, key: String?) -> CleanItem {
             let label = parent.isEmpty ? "~" : (parent as NSString).lastPathComponent
             let note = match == .bundleID
@@ -262,7 +270,7 @@ public struct AppsScanner: Cleaner {
                 name: "\(info.name): \(url.lastPathComponent)",
                 path: url.path,
                 allocatedBytes: m.allocatedBytes,
-                risk: match == .bundleID ? .green : .yellow,
+                risk: match == .bundleID && risk != .red ? .green : .yellow,
                 dateSignal: m.newestModification.map { .modified(days: DateSignal.days(from: $0, to: context.now)) } ?? .unknown,
                 lockReason: leftoverLock,
                 note: note,

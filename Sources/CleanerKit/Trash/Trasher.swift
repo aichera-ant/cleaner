@@ -53,6 +53,8 @@ public struct TrashReport: Codable, Sendable {
 ///
 /// Uygulama istisnası (`apps` kategorisi): `PathPolicy.appBundleRejectionReason` + Apple (`com.apple.*`) değil
 /// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile).
+/// Komut satırı bağlantısı ve yakın kullanım taşıma engeli değildir (tarayıcıda uyarıdır, karar kullanıcıda);
+/// "çalışıyor" kontrolü ise taşıma anında her zaman yeniden yapılır.
 ///
 /// Uygulama artıkları ayrı öğedir (`parentAppID`, `leftoverMatch`); `relatedPaths` dolu öğe reddedilir. Artık,
 /// uygulaması seçilmeden de taşınabilir. Taşıma anında yeniden doğrulanır: kesin artık

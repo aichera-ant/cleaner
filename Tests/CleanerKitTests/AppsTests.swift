@@ -407,10 +407,17 @@ struct AppsScannerTests {
         let n = try #require(byName["Never"])
         #expect(n.risk == .yellow && n.dateSignal == .unknown && n.relatedPaths == nil)
         #expect(n.note?.contains("kendi kaldırıcısı önerilir (LoginItems)") == true)
-        #expect(byName["Recent"]?.risk == .info)
+        // Kullanım işaretleri kilit değil, uyarı: seçilebilir ama varsayılan seçimde değil.
+        let rc = try #require(byName["Recent"])
+        #expect(rc.risk == .yellow && !rc.isLocked && rc.preselect == false)
+        #expect(rc.note?.contains("Son 90 günde açtın; kullanmaya devam ediyorsan silme") == true)
+        #expect(rc.note?.contains("Yeniden indirilir") == false)
         #expect(byName["Running"]?.lockReason == "çalışıyor")
-        #expect(byName["Cli"]?.lockReason == "Komut satırından kullanılıyor (cli)")
-        #expect(byName["Active"]?.lockReason?.contains("son 5 günde") == true)
+        let c = try #require(byName["Cli"])
+        #expect(c.risk == .red && !c.isLocked && c.preselect == false)
+        #expect(c.note?.contains("Terminaldeki `cli` komutu bu uygulamaya bağlı; silersen komut çalışmaz") == true)
+        let a = try #require(byName["Active"])
+        #expect(a.risk == .yellow && !a.isLocked && a.preselect == false && a.note?.contains("son 5 günde") == true)
         #expect(byName["RootOwned"]?.lockReason?.contains("yazma izni") == true)
         #expect(byName["HomeApp"]?.risk == .yellow && byName["HomeApp"]?.path == homeApp.path)
 
@@ -418,12 +425,14 @@ struct AppsScannerTests {
         let tr = Trasher(policy: policy, commands: FakeCommands(), processes: PathProcesses(), selfExecutable: nil,
                          selfBundleID: nil, mover: { _ in Issue.record("taşınmamalıydı"); return nil })
         let r = await tr.trash(items)
-        #expect(Set(r.done.filter { $0.detail == nil }.map(\.path)) == [old.path, never.path, homeApp.path])
-        #expect(r.done.filter { $0.detail == "artık" }.count == 3)
-        // 5 kilitli/bilgi uygulama + Active'in kilitli kesin artığı.
-        #expect(r.refused.count == 6, "\(r.refused)")
-        #expect(leftoverItems.first { $0.path.hasSuffix("com.example.active.plist") }?.lockReason?.hasPrefix("uygulama kilitli") == true)
-        _ = recent
+        #expect(Set(r.done.filter { $0.detail == nil }.map(\.path))
+            == [old.path, never.path, homeApp.path, recent.path, cli.path, apps.appending(path: "Active.app").path])
+        // Old'un 3 kesin artığı + Active'in (artık kilitsiz) kesin artığı.
+        #expect(r.done.filter { $0.detail == "artık" }.count == 4)
+        // Yalnız çalışan ve yazılamayan (yapısal ret) uygulama.
+        #expect(Set(r.refused.map(\.path)) == [running.path, locked.path], "\(r.refused)")
+        let activeLeft = try #require(leftoverItems.first { $0.path.hasSuffix("com.example.active.plist") })
+        #expect(!activeLeft.isLocked && activeLeft.risk == .green)
     }
 
     @Test("kayıt: apps tarayıcısı çekirdekte kayıtlı")
