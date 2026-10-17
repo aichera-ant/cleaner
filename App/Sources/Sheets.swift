@@ -22,6 +22,11 @@ struct SheetLayer: View {
                         ui.sheet = nil
                         Task { await model.startScan() }
                     })
+                case .nothingToClean:
+                    NothingSheet(onClose: { ui.sheet = nil }, onRescan: {
+                        ui.sheet = nil
+                        Task { await model.startScan() }
+                    })
                 }
             }
         }
@@ -160,6 +165,31 @@ struct StaleSheet: View {
                     Spacer()
                     Button("Vazgeç", action: onCancel).buttonStyle(SoftButtonStyle()).keyboardShortcut(.cancelAction)
                     Button("Yeniden tara", action: onRescan).buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+    }
+}
+
+struct NothingSheet: View {
+    var onClose: () -> Void
+    var onRescan: () -> Void
+
+    var body: some View {
+        SheetFrame {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    CategoryTile(tint: Theme.ok, symbol: "checkmark.seal", size: 42)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Güvenle temizlenecek öğe kalmadı").font(.system(size: 17, weight: .bold, design: .rounded))
+                        Text("Yeşil öğelerin hepsi temizlenmiş. Sarı ve kırmızı öğeleri kategorilerden tek tek inceleyip kendin seçebilirsin.")
+                            .foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Yeniden tara", action: onRescan).buttonStyle(SoftButtonStyle())
+                    Button("Tamam", action: onClose).buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                 }
             }
         }

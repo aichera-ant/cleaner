@@ -13,6 +13,8 @@ final class UIState {
     enum Sheet: Equatable {
         case confirm(TrashPlan)
         case stale
+        /// Akıllı seçimde taşınacak öğe yok.
+        case nothingToClean
     }
 
     var section: Section = .overview

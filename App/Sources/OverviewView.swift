@@ -72,7 +72,7 @@ struct OverviewView: View {
                 switch model.requestConfirm() {
                 case .plan(let p): ui.sheet = .confirm(p)
                 case .needsRescan: ui.sheet = .stale
-                case .nothingSelected: break
+                case .nothingSelected: ui.sheet = .nothingToClean
                 }
             } label: {
                 Label("Akıllı seçimi önizle", systemImage: "sparkles").padding(.horizontal, 4).padding(.vertical, 2)
