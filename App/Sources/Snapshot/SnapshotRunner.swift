@@ -11,7 +11,7 @@ enum SnapshotRunner {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         await renderSettings(into: dir)
         for width in [1100, 800] {
-            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler", "uygulama-artik"] {
+            for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler", "uygulama-artik", "tanitim", "ilk-izinler"] {
                 let (model, ui) = await prepare(name)
                 render(RootView(model: model, ui: ui, perms: perms(for: name)), width: width, to: "\(dir)/\(name)-\(width).png")
                 model.cancelScan()
@@ -57,15 +57,33 @@ enum SnapshotRunner {
         func automation(askUser: Bool) -> ProbeResult { .denied }
     }
 
+    private struct DeniedProbe: PermissionProbe {
+        func fullDiskAccess() -> ProbeResult { .denied }
+        func automation(askUser: Bool) -> ProbeResult { .notDetermined }
+    }
+
+    private struct SampleNotif: NotificationPermissionControlling {
+        func status() async -> NotificationAuth { .notDetermined }
+        func request() async -> NotificationAuth { .authorized }
+    }
+
     private static func perms(for name: String) -> PermissionModel {
         let d = UserDefaults(suiteName: "cleaner-snapshot-perms")!
         d.removePersistentDomain(forName: "cleaner-snapshot-perms")
         d.set(true, forKey: PermissionModel.seenKey)
-        return PermissionModel(probe: SampleProbe(), defaults: d)
+        return PermissionModel(probe: name == "ilk-izinler" ? DeniedProbe() : SampleProbe(), defaults: d)
     }
 
     private static func prepare(_ name: String) async -> (AppModel, UIState) {
         let ui = UIState()
+        ui.onboarding = nil
+        if name == "tanitim" || name == "ilk-izinler" {
+            let d = UserDefaults(suiteName: "cleaner-snapshot-onb")!
+            d.removePersistentDomain(forName: "cleaner-snapshot-onb")
+            ui.onboarding = OnboardingModel(page: name == "tanitim" ? .intro : .permissions, defaults: d)
+            ui.notifications = NotificationPermissionModel(controller: SampleNotif())
+            ui.loginItem = SampleLogin()
+        }
         if name == "tarama" {
             let model = AppModel(scanService: SampleScanService(neverFinish: true, progressUpTo: 4), trashService: SampleTrashService(),
                                  diskProvider: disk)

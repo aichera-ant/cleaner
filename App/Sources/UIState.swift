@@ -21,6 +21,11 @@ final class UIState {
         case appLeftovers(String)
     }
 
+    /// İlk açılış akışı; yalnız ilk açılışta dolu, bitince nil.
+    var onboarding: OnboardingModel? = OnboardingFlow.shouldShow() ? OnboardingModel() : nil
+    var notifications = NotificationPermissionModel()
+    var loginItem: any LoginItemControlling = LiveLoginItem()
+
     var section: Section = .overview
     var sheet: Sheet?
     /// Uygulamalar sayfasında artıkları açık olan uygulamalar (varsayılan: hepsi kapalı).
