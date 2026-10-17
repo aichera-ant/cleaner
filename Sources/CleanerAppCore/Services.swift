@@ -20,7 +20,6 @@ public struct ScanSnapshot: Sendable {
 }
 
 /// Tarama ilerlemesi (uygulama tipi).
-// ip2-core: çekirdekte `ScanProgress` gelince bu tip ondan üretilir (alanlar aynı: scanner, categories, event, completed, total).
 public struct AppScanProgress: Sendable, Equatable {
     public enum Event: Sendable, Equatable {
         case started
@@ -29,12 +28,23 @@ public struct AppScanProgress: Sendable, Equatable {
     }
 
     public var scanner: String
-    public var categories: [CleanerKit.Category]
+    public var categories: [ItemCategory]
     public var event: Event
     public var completed: Int
     public var total: Int
 
-    public init(scanner: String, categories: [CleanerKit.Category], event: Event, completed: Int, total: Int) {
+    /// Çekirdeğin `ScanProgress`inden üretir.
+    public init(_ p: ScanProgress) {
+        let event: Event
+        switch p.event {
+        case .started: event = .started
+        case .finished(let n, let b): event = .finished(itemCount: n, bytes: b)
+        case .failed(let m): event = .failed(m)
+        }
+        self.init(scanner: p.scanner, categories: p.categories, event: event, completed: p.completed, total: p.total)
+    }
+
+    public init(scanner: String, categories: [ItemCategory], event: Event, completed: Int, total: Int) {
         self.scanner = scanner
         self.categories = categories
         self.event = event
@@ -61,24 +71,12 @@ public struct LiveScanService: ScanService {
         CloudGuard.disableDatalessMaterializationForProcess()
         let context = try ScanContext.live()
         let engine = ScanEngine()
-        let cleaners = engine.registry.cleaners.map { (id: $0.id, categories: Array($0.categories).sorted { $0.rawValue < $1.rawValue }) }
-        let total = cleaners.count
-        // ip2-core: `ScanEngine.scan(..., progress:)` gelince gerçek ilerleme buradan akar; şimdilik yalnız başla/bitti.
-        if let progress {
-            for c in cleaners {
-                progress(.init(scanner: c.id, categories: c.categories, event: .started, completed: 0, total: total))
-            }
+        // Çekirdek bu kapanışı eşzamanlı iş parçacıklarından çağırır; AppModel sıraya koyup MainActor'a aktarır.
+        var coreProgress: (@Sendable (ScanProgress) -> Void)?
+        if let sink = progress {
+            coreProgress = { @Sendable (p: ScanProgress) in sink(AppScanProgress(p)) }
         }
-        let report = try await engine.scan(context)
-        if let progress {
-            for (i, c) in cleaners.enumerated() {
-                let mine = report.items.filter { c.categories.contains($0.category) }
-                let bytes = mine.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }
-                progress(.init(scanner: c.id, categories: c.categories,
-                               event: .finished(itemCount: mine.count, bytes: bytes),
-                               completed: i + 1, total: total))
-            }
-        }
+        let report = try await engine.scan(context, progress: coreProgress)
         return ScanSnapshot(items: report.items, errors: report.errors, dropped: report.dropped, scannedAt: context.now)
     }
 }
@@ -91,11 +89,11 @@ public struct LiveTrashService: TrashService {
         CloudGuard.disableDatalessMaterializationForProcess()
         do {
             let context = try ScanContext.live()
-            // ip2-core: `Trasher(..., privilegedRecycler: WorkspaceRecycler())` (macOS korumalı uygulamalar için parola/Touch ID).
-            let trasher = Trasher(policy: context.pathPolicy, commands: context.signals.commands)
-            // ip2-core: `trasher.trash(ids:scan:dryRun:keepers:)`; şimdilik keepers geçilmez (arayüzde durumda tutulur).
-            _ = keepers
-            return await trasher.trash(ids: ids, scan: scan, dryRun: dryRun)
+            // Yetkili taşıyıcı yalnız çekirdeğin doğruladığı `needsAuthorization` uygulama paketi için kullanılır
+            // (macOS parola ya da Touch ID ister).
+            let trasher = Trasher(policy: context.pathPolicy, commands: context.signals.commands,
+                                  privilegedRecycler: WorkspaceRecycler())
+            return await trasher.trash(ids: ids, scan: scan, dryRun: dryRun, keepers: keepers)
         } catch {
             let refused = ids.map { TrashReport.Refused(id: $0, path: "", reason: "hazırlık başarısız: \(error.localizedDescription)") }
             return TrashReport(dryRun: dryRun, done: [], refused: refused)

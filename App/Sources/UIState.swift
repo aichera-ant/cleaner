@@ -4,7 +4,7 @@ import Observation
 
 enum Section: Hashable {
     case overview
-    case category(CleanerKit.Category)
+    case category(ItemCategory)
 }
 
 @MainActor

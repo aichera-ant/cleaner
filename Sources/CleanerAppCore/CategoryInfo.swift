@@ -3,13 +3,12 @@ import Foundation
 
 /// Kategorinin arayüzdeki adı, bölümü ve açıklaması (Türkçe). Simge SF Symbol adıdır.
 public struct CategoryInfo: Sendable, Equatable, Identifiable {
-    // ip2-core: `ItemCategory` typealias'ı gelince `CleanerKit.Category` yerine o yazılır.
-    public var category: CleanerKit.Category
+    public var category: ItemCategory
     public var title: String
     public var section: String
     public var blurb: String
     public var symbol: String
-    public var id: CleanerKit.Category { category }
+    public var id: ItemCategory { category }
 
     public static let all: [CategoryInfo] = [
         .init(category: .xcode, title: "Xcode", section: "Geliştirici",
@@ -41,7 +40,7 @@ public struct CategoryInfo: Sendable, Equatable, Identifiable {
               symbol: "square.grid.2x2"),
     ]
 
-    public static func info(for category: CleanerKit.Category) -> CategoryInfo {
+    public static func info(for category: ItemCategory) -> CategoryInfo {
         all.first { $0.category == category }!
     }
 

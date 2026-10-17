@@ -36,7 +36,7 @@ public enum Summaries {
         items.sorted { ($0.allocatedBytes, $1.path) > ($1.allocatedBytes, $0.path) }
     }
 
-    public static func items(in category: CleanerKit.Category, _ items: [CleanItem]) -> [CleanItem] {
+    public static func items(in category: ItemCategory, _ items: [CleanItem]) -> [CleanItem] {
         sorted(items.filter { $0.category == category })
     }
 
@@ -44,15 +44,15 @@ public enum Summaries {
         items.reduce(0) { $0 &+ $1.allocatedBytes }
     }
 
-    public static func totals(_ items: [CleanItem]) -> [CleanerKit.Category: UInt64] {
-        var t: [CleanerKit.Category: UInt64] = [:]
+    public static func totals(_ items: [CleanItem]) -> [ItemCategory: UInt64] {
+        var t: [ItemCategory: UInt64] = [:]
         for i in items { t[i.category, default: 0] &+= i.allocatedBytes }
         return t
     }
 
     /// "Güvenle temizlenebilir": yeşil, kilitsiz, temizlenebilir öğeler (tutulacak kopya hariç).
     public static func cleanableBytes(_ items: [CleanItem], selection: SelectionState = SelectionState()) -> UInt64 {
-        items.filter { $0.risk == .green && SelectionState.baseSelectable($0) && !selection.isKeeper($0) }
+        items.filter { selection.effective($0).risk == .green && selection.isSelectable($0) }
             .reduce(0) { $0 &+ $1.allocatedBytes }
     }
 
@@ -79,11 +79,13 @@ public enum Summaries {
 /// Taşımadan önceki onay sayfasının içeriği.
 public struct TrashPlan: Sendable, Equatable {
     /// Çöp Kutusu'na gidecekler, kategoriye göre (kategori sırası sabit).
-    public var trashGroups: [(category: CleanerKit.Category, items: [CleanItem])]
+    public var trashGroups: [(category: ItemCategory, items: [CleanItem])]
     /// Komutla temizlenecekler (Çöp Kutusu'na gitmez).
     public var commandItems: [CleanItem]
     /// Yeşil olmayan, kullanıcının seçtiği öğeler.
     public var nonGreen: [CleanItem]
+    /// Taşırken macOS parola ya da Touch ID isteyecek olanlar (seçilenlerin alt kümesi).
+    public var authorizationItems: [CleanItem]
     public var itemCount: Int
     public var totalBytes: UInt64
     public var ids: [String]
@@ -93,13 +95,14 @@ public struct TrashPlan: Sendable, Equatable {
 
     public static func == (a: TrashPlan, b: TrashPlan) -> Bool {
         a.ids == b.ids && a.totalBytes == b.totalBytes && a.commandItems == b.commandItems && a.nonGreen == b.nonGreen
+            && a.authorizationItems == b.authorizationItems
     }
 
     public init(selected: [CleanItem]) {
         let sortedItems = Summaries.sorted(selected)
-        var groups: [(CleanerKit.Category, [CleanItem])] = []
+        var groups: [(ItemCategory, [CleanItem])] = []
         var cmds: [CleanItem] = []
-        for cat in CleanerKit.Category.allCases {
+        for cat in ItemCategory.allCases {
             let inCat = sortedItems.filter { $0.category == cat && !Self.isCommand($0) }
             if !inCat.isEmpty { groups.append((cat, inCat)) }
         }
@@ -107,6 +110,7 @@ public struct TrashPlan: Sendable, Equatable {
         trashGroups = groups.map { (category: $0.0, items: $0.1) }
         commandItems = cmds
         nonGreen = sortedItems.filter { $0.risk != .green }
+        authorizationItems = sortedItems.filter { Fmt.needsAuthorization($0) }
         itemCount = sortedItems.count
         totalBytes = Summaries.totalBytes(sortedItems)
         ids = sortedItems.map(\.id)
@@ -172,17 +176,17 @@ public struct ScanProgressState: Sendable, Equatable {
         case failed(String)
     }
 
-    public private(set) var rows: [CleanerKit.Category: Status] = [:]
+    public private(set) var rows: [ItemCategory: Status] = [:]
     public private(set) var completed = 0
     public private(set) var total = 0
 
     public init() {
-        for c in CleanerKit.Category.allCases { rows[c] = .pending }
+        for c in ItemCategory.allCases { rows[c] = .pending }
     }
 
     public var fraction: Double { total == 0 ? 0 : min(1, Double(completed) / Double(total)) }
 
-    public func status(_ c: CleanerKit.Category) -> Status { rows[c] ?? .pending }
+    public func status(_ c: ItemCategory) -> Status { rows[c] ?? .pending }
 
     public mutating func apply(_ p: AppScanProgress) {
         total = p.total
@@ -202,7 +206,7 @@ public struct ScanProgressState: Sendable, Equatable {
     /// Sonuç gelince satırları gerçek kategori toplamlarıyla doldurur.
     public mutating func finish(items: [CleanItem]) {
         completed = total
-        for c in CleanerKit.Category.allCases {
+        for c in ItemCategory.allCases {
             let mine = items.filter { $0.category == c }
             if case .failed = status(c) { continue }
             rows[c] = .done(itemCount: mine.count, bytes: Summaries.totalBytes(mine))

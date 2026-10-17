@@ -6,7 +6,7 @@ import SwiftUI
 struct CategoryView: View {
     let model: AppModel
     let ui: UIState
-    let category: CleanerKit.Category
+    let category: ItemCategory
 
     private var info: CategoryInfo { CategoryInfo.info(for: category) }
     private var items: [CleanItem] { Summaries.items(in: category, model.items) }
@@ -38,7 +38,7 @@ struct CategoryView: View {
         HStack {
             Text("\(its.count) öğe · \(nsel) seçili").foregroundStyle(Theme.fg2)
             Spacer()
-            if its.contains(where: { $0.risk == .green && model.selection.isSelectable($0) }) {
+            if its.contains(where: { model.selection.effective($0).risk == .green && model.selection.isSelectable($0) }) {
                 Button(model.selection.allGreensSelected(in: its) ? "Yeşillerin seçimini kaldır" : "Tüm yeşilleri seç") {
                     model.selection.toggleGreens(in: its)
                 }
@@ -217,14 +217,16 @@ struct DuplicatesBody: View {
         let sel = model.selection
         let kept = sel.isKeeper(m)
         let on = sel.isSelected(m)
+        // "Bunu tut" seçimi uygulanmış hali: özgün tutulacak kopya başkası tutulunca taşınabilir görünür.
+        let e = sel.effective(m)
         return HStack(alignment: .top, spacing: 10) {
-            CheckBox(on: on, enabled: sel.isSelectable(m), lockHelp: m.lockReason ?? (kept ? "Tutulacak kopya" : nil)) {
+            CheckBox(on: on, enabled: sel.isSelectable(m), lockHelp: e.lockReason ?? (kept ? "Tutulacak kopya" : nil)) {
                 model.selection.toggle(m)
             }
             .opacity(kept ? 0.0 : 1).padding(.top, 1)
             VStack(alignment: .leading, spacing: 3) {
                 Text(Fmt.tilde(m.path)).font(.system(size: 11.5, design: .monospaced)).lineLimit(2).truncationMode(.middle)
-                if let lock = m.lockReason { Text(lock).font(.system(size: 11.5)).foregroundStyle(Theme.fg2) }
+                if let lock = e.lockReason { Text(lock).font(.system(size: 11.5)).foregroundStyle(Theme.fg2) }
                 if let n = m.note, !kept, !n.isEmpty { Text(n).font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true) }
                 DateText(signal: m.dateSignal)
             }
@@ -238,7 +240,11 @@ struct DuplicatesBody: View {
                     .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.fg2)
                     .padding(.horizontal, 9).padding(.vertical, 2)
                     .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
-                Pill(text: Fmt.riskLabel(m), color: Theme.riskColor(m))
+                if e.isLocked {
+                    Pill(text: "Kullanımda", color: Theme.mute)
+                } else {
+                    Pill(text: Fmt.riskLabel(e), color: Theme.riskColor(e))
+                }
             }
             RevealButton(path: m.path)
         }

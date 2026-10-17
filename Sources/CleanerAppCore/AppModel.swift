@@ -71,16 +71,25 @@ public final class AppModel {
         progress = ScanProgressState()
         phase = .scanning
         let service = scanService
+        // Çekirdek ilerlemeyi eşzamanlı iş parçacıklarından bildirir; akış sırayı korur, tek tüketici MainActor'da.
+        let (stream, sink) = AsyncStream.makeStream(of: AppScanProgress.self)
         let task = Task { [weak self] in
+            let pump = Task { @MainActor [weak self] in
+                for await p in stream { self?.apply(progress: p) }
+            }
             do {
-                let snap = try await service.scan(progress: { [weak self] p in
-                    Task { @MainActor in self?.apply(progress: p) }
-                })
+                let snap = try await service.scan(progress: { sink.yield($0) })
+                sink.finish()
+                await pump.value
                 try Task.checkCancellation()
                 self?.finishScan(snap)
             } catch is CancellationError {
+                sink.finish()
+                await pump.value
                 self?.cancelled()
             } catch {
+                sink.finish()
+                await pump.value
                 self?.failed(error)
             }
         }

@@ -74,6 +74,15 @@ struct ConfirmSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Theme.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
+                if !plan.authorizationItems.isEmpty {
+                    Label {
+                        Text("**macOS parola ya da Touch ID isteyecek** (\(plan.authorizationItems.count) öğe): \(plan.authorizationItems.map(\.name).joined(separator: ", ")). Bu uygulamalar macOS tarafından korunuyor; her biri için ayrıca onay istenir, vazgeçersen o uygulama taşınmaz.")
+                    } icon: { Image(systemName: "touchid") }
+                        .font(.system(size: 12)).foregroundStyle(Theme.fg2)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
                 Scroller {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(plan.trashGroups.enumerated()), id: \.offset) { _, g in

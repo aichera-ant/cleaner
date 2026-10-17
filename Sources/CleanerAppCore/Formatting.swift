@@ -47,7 +47,6 @@ public enum Fmt {
 
     /// macOS korumalı uygulama: taşırken parola ya da Touch ID isteyecek mi?
     public static func needsAuthorization(_ item: CleanItem) -> Bool {
-        // ip2-core: `CleanItem.needsAuthorization: Bool?` gelince `item.needsAuthorization == true` döner.
-        false
+        item.needsAuthorization == true
     }
 }

@@ -34,7 +34,7 @@ struct SidebarView: View {
         .background(SidebarBackground())
     }
 
-    private func sizeText(_ c: CleanerKit.Category) -> String? {
+    private func sizeText(_ c: ItemCategory) -> String? {
         guard model.snapshot != nil, model.phase != .scanning, !model.resultsOutdated else { return nil }
         let its = model.items.filter { $0.category == c }
         if c == .apps { return its.isEmpty ? nil : "\(its.count)" }

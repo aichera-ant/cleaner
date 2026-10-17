@@ -2,12 +2,16 @@ import CleanerKit
 import Foundation
 @testable import CleanerAppCore
 
-func item(_ name: String, cat: CleanerKit.Category = .caches, bytes: UInt64 = 100, risk: Risk = .green,
+func item(_ name: String, cat: ItemCategory = .caches, bytes: UInt64 = 100, risk: Risk = .green,
           lock: String? = nil, method: CleanMethod = .trash, preselect: Bool? = nil,
-          group: String? = nil, keeper: String? = nil) -> CleanItem {
-    CleanItem(category: cat, name: name, path: "/tmp/cleaner-test/\(name)", allocatedBytes: bytes, risk: risk,
+          group: String? = nil, keeper: String? = nil, auth: Bool? = nil,
+          ifNotKeptRisk: Risk? = nil, ifNotKeptLock: String? = nil) -> CleanItem {
+    var i = CleanItem(category: cat, name: name, path: "/tmp/cleaner-test/\(name)", allocatedBytes: bytes, risk: risk,
               lockReason: lock, method: method, preselect: preselect, groupID: group,
-              keeperPath: keeper.map { "/tmp/cleaner-test/\($0)" })
+              keeperPath: keeper.map { "/tmp/cleaner-test/\($0)" }, needsAuthorization: auth)
+    i.ifNotKeptRisk = ifNotKeptRisk
+    i.ifNotKeptLockReason = ifNotKeptLock
+    return i
 }
 
 final class FakeScan: ScanService, @unchecked Sendable {

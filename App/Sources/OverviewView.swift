@@ -6,7 +6,7 @@ struct OverviewView: View {
     let model: AppModel
     let ui: UIState
 
-    private var totals: [CleanerKit.Category: UInt64] { Summaries.totals(model.items) }
+    private var totals: [ItemCategory: UInt64] { Summaries.totals(model.items) }
 
     var body: some View {
         Scroller {
@@ -85,7 +85,7 @@ struct OverviewView: View {
     private func card(_ info: CategoryInfo) -> some View {
         let its = model.items.filter { $0.category == info.category }
         let rc = Summaries.riskCounts(its)
-        let green = its.filter { $0.risk == .green && SelectionState.baseSelectable($0) }
+        let green = its.filter { model.selection.effective($0).risk == .green && model.selection.isSelectable($0) }
         let isApp = info.category == .apps
         return Button { ui.section = .category(info.category) } label: {
             VStack(alignment: .leading, spacing: 8) {

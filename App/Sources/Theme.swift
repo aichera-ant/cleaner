@@ -32,7 +32,7 @@ enum Theme {
     static let fg2 = Color.secondary
     static let fg3 = Color.secondary.opacity(0.7)
 
-    static func tint(_ c: CleanerKit.Category) -> Color {
+    static func tint(_ c: ItemCategory) -> Color {
         switch c {
         case .xcode: Color(hex: 0x2f7de1)
         case .projectArtifacts: Color(hex: 0x2a9a6a)
