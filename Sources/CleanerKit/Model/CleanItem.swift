@@ -144,6 +144,9 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     /// Yalnız `duplicates` tutulacak kopyasında: kullanıcı başka kopyayı tutarsa bu kopyanın kilit nedeni
     /// (ör. git'te takipli). Doluysa bu kopya yine taşınamaz.
     public var ifNotKeptLockReason: String?
+    /// Yalnız `duplicates` tutulacak kopyasında: kullanıcı başka kopyayı tutarsa bu kopyanın gerçek ayrılan boyutu.
+    /// Tutulacak kopyanın kendi `allocatedBytes`'ı 0 kalır (toplamlarda çift sayım olmasın). nil: bilinmiyor.
+    public var ifNotKeptBytes: UInt64?
 
     public init(
         category: Category,

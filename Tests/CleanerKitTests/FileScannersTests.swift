@@ -60,6 +60,8 @@ struct DuplicatesScannerTests {
         #expect(keeper.method == .none && !keeper.isDefaultSelected && keeper.allocatedBytes == 0)
         let dup = try #require(items.first { $0.path.hasSuffix("Downloads/rapor.pdf") })
         #expect(dup.risk == .green && dup.isDefaultSelected)
+        #expect(dup.allocatedBytes > 0 && keeper.ifNotKeptBytes == dup.allocatedBytes)
+        #expect(dup.ifNotKeptBytes == nil)
         #expect(dup.note?.contains("Aynısı duruyor") == true)
         // Grup bilgisi modelde: aynı grup, aynı tutulacak kopya; not öneki yok.
         #expect(keeper.groupID != nil && dup.groupID == keeper.groupID)

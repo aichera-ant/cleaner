@@ -27,7 +27,19 @@ public struct WorkspaceRecycler: Recycling {
 
     public func recycle(_ url: URL) async throws -> URL? {
         let result = try await Self.recycleOnMain(url)
-        return result[url] ?? result[url.standardizedFileURL] ?? result.values.first
+        return Self.resultingURL(for: url, in: result)
+    }
+
+    /// Sonuç sözlüğünde bu URL'nin karşılığı (standardize/resolve edilmiş eşleşme dahil); yoksa nil.
+    /// Başka bir öğenin konumuna asla düşmez.
+    static func resultingURL(for url: URL, in result: [URL: URL]) -> URL? {
+        if let r = result[url] ?? result[url.standardizedFileURL] { return r }
+        let keys = [url.standardizedFileURL.path, url.resolvingSymlinksInPath().path]
+        for (k, v) in result {
+            let kp = [k.standardizedFileURL.path, k.resolvingSymlinksInPath().path]
+            if keys.contains(where: kp.contains) { return v }
+        }
+        return nil
     }
 
     /// AppKit çağrısı ana aktörde yapılır (yetki penceresi arayüze bağlıdır).

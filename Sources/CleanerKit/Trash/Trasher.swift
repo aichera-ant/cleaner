@@ -191,6 +191,7 @@ public struct Trasher: Sendable {
             && item.isDuplicateKeeper == scanned.isDuplicateKeeper && item.relatedPaths == scanned.relatedPaths
             && item.preselect == scanned.preselect && item.needsAuthorization == scanned.needsAuthorization
             && item.ifNotKeptRisk == scanned.ifNotKeptRisk && item.ifNotKeptLockReason == scanned.ifNotKeptLockReason
+            && item.ifNotKeptBytes == scanned.ifNotKeptBytes
     }
 
     /// id -> tarama öğesi. Taramada birden çok kez geçen id belirsizdir (`ambiguous`), hiçbiri kullanılmaz.
@@ -399,6 +400,7 @@ public struct Trasher: Sendable {
                     items[i].allocatedBytes = Trasher.allocatedBytes(items[i].path)
                     items[i].ifNotKeptRisk = nil
                     items[i].ifNotKeptLockReason = nil
+                    items[i].ifNotKeptBytes = nil
                 }
                 items[i].keeperPath = newKeeper
             }

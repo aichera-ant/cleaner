@@ -131,7 +131,7 @@ public final class AppModel {
         if isStale() { return .needsRescan }
         let sel = selectedItems
         guard !sel.isEmpty else { return .nothingSelected }
-        return .plan(TrashPlan(selected: sel))
+        return .plan(TrashPlan(selected: sel, keepers: selection.keepers))
     }
 
     /// Onaydan sonra taşır. `plan` onay sayfasında gösterilen plandır; seçim arada değiştiyse taşınmaz.
@@ -140,7 +140,7 @@ public final class AppModel {
     public func confirmMove(_ plan: TrashPlan, dryRun: Bool = false) async -> ConfirmOutcome {
         guard phase == .ready, !resultsOutdated, let snap = snapshot else { return .needsRescan }
         if ScanFreshness.isStale(scannedAt: snap.scannedAt, now: now()) { return .needsRescan }
-        let current = TrashPlan(selected: selectedItems)
+        let current = TrashPlan(selected: selectedItems, keepers: selection.keepers)
         guard current == plan, !plan.ids.isEmpty else { return .plan(current) }
         phase = .moving
         // Yalnız taze tarama sonucu (bellekteki) verilir.

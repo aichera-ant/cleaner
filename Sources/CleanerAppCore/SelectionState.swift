@@ -33,7 +33,7 @@ public struct SelectionState: Sendable, Equatable {
     }
 
     /// Kullanıcının "Bunu tut" seçimi uygulanmış öğe (çekirdekteki `applyKeepers` ile aynı alan değişiklikleri;
-    /// boyut değişmez). Seçim yoksa ya da özgün tutulacak kopya zaten tutuluyorsa öğe aynen döner.
+    /// boyut: eski tutulacak kopya `ifNotKeptBytes` ile gerçek boyutunu alır). Seçim yoksa ya da özgün tutulacak kopya zaten tutuluyorsa öğe aynen döner.
     public func effective(_ item: CleanItem) -> CleanItem {
         guard item.category == .duplicates, let g = item.groupID, let wanted = keepers[g],
               let original = item.keeperPath, wanted != original else { return item }
@@ -49,6 +49,8 @@ public struct SelectionState: Sendable, Equatable {
             e.preselect = false
             e.ifNotKeptRisk = nil
             e.ifNotKeptLockReason = nil
+            if let b = item.ifNotKeptBytes { e.allocatedBytes = b }
+            e.ifNotKeptBytes = nil
         }
         e.keeperPath = wanted
         return e

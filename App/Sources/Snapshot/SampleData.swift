@@ -1,3 +1,4 @@
+#if DEBUG
 import CleanerAppCore
 import CleanerKit
 import Foundation
@@ -101,3 +102,4 @@ struct SampleTrashService: TrashService {
         return TrashReport(dryRun: dryRun, done: done, refused: refused, skipped: skipped)
     }
 }
+#endif

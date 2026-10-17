@@ -196,3 +196,34 @@ struct SignalTests {
         #expect(GitCommand.filterOverrides(["a"]) == ["-c", "filter.a.clean=", "-c", "filter.a.process="])
     }
 }
+
+@Suite struct Round2FixTests {
+    @Test func matchesScanComparesIfNotKeptBytes() {
+        var a = CleanItem(category: .duplicates, name: "k", path: "/tmp/x/k", allocatedBytes: 0, risk: .info, method: .none)
+        a.ifNotKeptBytes = 4096
+        var b = a
+        #expect(Trasher.matchesScan(b, a))
+        b.ifNotKeptBytes = 1
+        #expect(!Trasher.matchesScan(b, a))
+        b.ifNotKeptBytes = nil
+        #expect(!Trasher.matchesScan(b, a))
+    }
+
+    @Test func ifNotKeptBytesCodableBackCompat() throws {
+        var a = CleanItem(category: .duplicates, name: "k", path: "/tmp/x/k", allocatedBytes: 0, risk: .info, method: .none)
+        let old = try JSONEncoder().encode(a)
+        #expect(try JSONDecoder().decode(CleanItem.self, from: old).ifNotKeptBytes == nil)
+        a.ifNotKeptBytes = 7
+        #expect(try JSONDecoder().decode(CleanItem.self, from: JSONEncoder().encode(a)).ifNotKeptBytes == 7)
+    }
+
+    @Test func recyclerResultLookupNeverFallsBackToOtherItem() {
+        let u = URL(fileURLWithPath: "/tmp/x/a.app")
+        let other = URL(fileURLWithPath: "/tmp/x/b.app")
+        let trashed = URL(fileURLWithPath: "/tmp/.Trash/a.app")
+        #expect(WorkspaceRecycler.resultingURL(for: u, in: [u: trashed]) == trashed)
+        #expect(WorkspaceRecycler.resultingURL(for: u, in: [URL(fileURLWithPath: "/tmp/x/./a.app"): trashed]) == trashed)
+        #expect(WorkspaceRecycler.resultingURL(for: u, in: [other: trashed]) == nil)
+        #expect(WorkspaceRecycler.resultingURL(for: u, in: [:]) == nil)
+    }
+}

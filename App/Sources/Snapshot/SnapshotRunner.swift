@@ -1,3 +1,4 @@
+#if DEBUG
 import AppKit
 import CleanerAppCore
 import CleanerKit
@@ -65,3 +66,4 @@ enum SnapshotRunner {
         }
     }
 }
+#endif

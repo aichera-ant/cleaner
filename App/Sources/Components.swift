@@ -161,7 +161,10 @@ struct WindowConfigurator: NSViewRepresentable {
 
 enum Actions {
     static func reveal(_ path: String) {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        switch RevealTarget.decide(path: path) {
+        case .select(let p): NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+        case .openParent(let p): NSWorkspace.shared.open(URL(fileURLWithPath: p, isDirectory: true))
+        }
     }
 
     static func openTrash() {

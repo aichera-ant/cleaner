@@ -253,6 +253,7 @@ public struct DuplicatesScanner: Cleaner {
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(group.size), countStyle: .file)
         // Kullanıcı "Bunu tut" ile başka kopyayı seçerse bu kopyanın alacağı risk ve kilit (tutulmayan kopya kuralı).
         let (keeperRisk, keeperLock) = Self.nonKeeperRisk(loc(keeper))
+        let keeperBytes = try await context.sizeMeter.measure(URL(fileURLWithPath: keeper.path)).allocatedBytes
         var items: [CleanItem] = []
         var keeperItem = CleanItem(
             category: .duplicates,
@@ -268,6 +269,7 @@ public struct DuplicatesScanner: Cleaner {
         )
         keeperItem.ifNotKeptRisk = keeperRisk
         keeperItem.ifNotKeptLockReason = keeperLock
+        keeperItem.ifNotKeptBytes = keeperBytes
         items.append(keeperItem)
         for c in ranked.dropFirst() {
             try context.checkCancellation()

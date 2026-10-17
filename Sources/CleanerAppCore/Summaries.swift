@@ -89,16 +89,34 @@ public struct TrashPlan: Sendable, Equatable {
     public var itemCount: Int
     public var totalBytes: UInt64
     public var ids: [String]
+    /// "Bunu tut" seçimleri (grup kimliği -> yol). Önizlemeden sonra değişirse plan farklı sayılır.
+    public var keepers: [String: String]
 
     public var trashCount: Int { trashGroups.reduce(0) { $0 + $1.items.count } }
     public var commandBytes: UInt64 { Summaries.totalBytes(commandItems) }
 
     public static func == (a: TrashPlan, b: TrashPlan) -> Bool {
         a.ids == b.ids && a.totalBytes == b.totalBytes && a.commandItems == b.commandItems && a.nonGreen == b.nonGreen
-            && a.authorizationItems == b.authorizationItems
+            && a.authorizationItems == b.authorizationItems && a.keepers == b.keepers
     }
 
-    public init(selected: [CleanItem]) {
+    /// Kalıcı silme uyarısında adı geçen en çok öğe sayısı.
+    static let warningNameLimit = 3
+
+    /// Komutla (kalıcı) temizlenecek öğe varsa uyarı metni: "N öğe kalıcı silinir, geri alınamaz: a, b ve X daha".
+    public var permanentDeleteWarning: String? {
+        guard !commandItems.isEmpty else { return nil }
+        let names = commandItems.prefix(Self.warningNameLimit).map(\.name).joined(separator: ", ")
+        let more = commandItems.count - Self.warningNameLimit
+        let tail = more > 0 ? " ve \(more) daha" : ""
+        return "\(commandItems.count) öğe kalıcı silinir, geri alınamaz: \(names)\(tail)."
+    }
+
+    /// Onay düğmesi: komutlu öğe varsa hepsi Çöp Kutusu'na gitmez.
+    public var confirmButtonTitle: String { commandItems.isEmpty ? "Çöp Kutusu'na taşı" : "Taşı ve temizle" }
+
+    public init(selected: [CleanItem], keepers: [String: String] = [:]) {
+        self.keepers = keepers
         let sortedItems = Summaries.sorted(selected)
         var groups: [(ItemCategory, [CleanItem])] = []
         var cmds: [CleanItem] = []

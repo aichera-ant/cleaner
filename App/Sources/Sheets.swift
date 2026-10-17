@@ -74,6 +74,15 @@ struct ConfirmSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Theme.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
+                if let warning = plan.permanentDeleteWarning {
+                    Label {
+                        Text("**\(warning)**")
+                    } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .font(.system(size: 12)).foregroundStyle(Theme.fg2)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.warn.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                }
                 if !plan.authorizationItems.isEmpty {
                     Label {
                         Text("**macOS parola ya da Touch ID isteyecek** (\(plan.authorizationItems.count) öğe): \(plan.authorizationItems.map(\.name).joined(separator: ", ")). Bu uygulamalar macOS tarafından korunuyor; her biri için ayrıca onay istenir, vazgeçersen o uygulama taşınmaz.")
@@ -103,7 +112,7 @@ struct ConfirmSheet: View {
                     Text("\(plan.trashCount) taşınacak · \(plan.commandItems.count) komut").foregroundStyle(Theme.fg2).monospacedDigit()
                     Spacer()
                     Button("Vazgeç", action: onCancel).buttonStyle(SoftButtonStyle()).keyboardShortcut(.cancelAction)
-                    Button("Çöp Kutusu'na taşı", action: onConfirm).buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+                    Button(plan.confirmButtonTitle, action: onConfirm).buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
                 }
             }
         }
