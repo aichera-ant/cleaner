@@ -12,7 +12,8 @@ import Foundation
 ///   - Ad tabanlı (`.name`): `LeftoverNames` kuralları (yalnız izinli klasörlerin doğrudan çocuğu, genel ad yok,
 ///     başka kurulu uygulamanın adı ya da bundle id'siyle ve ana klasörde bir komut satırı çalıştırılabiliriyle
 ///     çakışan yok, sabit ret listesi ve kimlik bilgisi sözcükleri yok, `.<ad>-*` yalnız klasör, sembolik bağlantı
-///     yok). Sarı, `preselect = false`; içinde (ya da doğrudan çocuğunda) `.git` olan klasör kırmızı.
+///     yok). Sarı, `preselect = false`; içinde (ya da doğrudan çocuğunda) `.git` olan klasör ve adıyla eşleşen
+///     komutu kendi içinde olan (uygulamanın kendi CLI'ı, `InstalledApps.commandMatches`) girdi kırmızı.
 ///   - Uygulama kilitliyse (çalışıyor, Cleaner, yapısal ret) artıkları da kilitlidir; uygulama kırmızıysa (komut
 ///     satırı bağlantısı) kesin artıklar da sarıdır. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
 /// - Kilit yalnız: çalışan, Cleaner'ın kendisi ve dar istisnanın yapısal reddi (`.rejected`, `.blocked`: iç içe,
@@ -144,10 +145,14 @@ public struct AppsScanner: Cleaner {
                 guard !exactKeys.contains(PathUtil.canonicalKey(url.path)),
                       policy.nameLeftoverRejectionReason(for: url, key: key) == nil,
                       policy.trashRejectionReason(for: url) == nil,
-                      installed.conflict(entry: entry, parent: rel, excludingBundleKey: bundleKey, ownerKey: key) == nil
+                      installed.conflict(entry: entry, parent: rel, candidate: url, excludingBundleKey: bundleKey,
+                                         ownerKey: key) == nil
                 else { continue }
+                let inner = installed.commandMatches(entry: entry, parent: rel, candidate: url,
+                                                     ownerBundleKey: bundleKey).internal
                 out.append(NameLeftover(url: url, parent: rel, key: key,
-                                        hasGitRepository: isDir && LeftoverNames.containsGitRepository(url)))
+                                        hasGitRepository: isDir && LeftoverNames.containsGitRepository(url),
+                                        internalCommands: inner))
                 if out.count >= maxNameLeftovers { return out }
             }
         }
@@ -161,9 +166,16 @@ public struct AppsScanner: Cleaner {
         var key: String
         /// Klasörün kendisi ya da doğrudan çocuğu `.git` içeriyor (kişisel ayar/dotfiles olabilir): kırmızı.
         var hasGitRepository: Bool
+        /// Adayın kendi içindeki, adıyla eşleşen komutlar (`InstalledApps.commandMatches`): kırmızı.
+        var internalCommands: [String] = []
     }
 
     static let gitRepositoryNote = "İçinde git deposu var; kişisel ayar/dotfiles olabilir"
+
+    /// Adayın içindeki komut(lar) için not.
+    static func internalCommandNote(_ names: [String]) -> String {
+        "İçindeki \(names.map { "`\($0)`" }.joined(separator: ", ")) komutu da silinir; terminalde artık çalışmaz"
+    }
 
     /// Uygulama köklerinde aynı bundle id'yi taşıyan başka `.app` paketleri (`excluding` hariç).
     static func otherBundles(withID bundleID: String, excluding: URL, appRoots: [URL], reader: SafeReader) -> [URL] {
@@ -280,18 +292,19 @@ public struct AppsScanner: Cleaner {
         // bağlantısı) artıkları en az sarı.
         let leftoverLock: String? = lock.map { "uygulama kilitli: \($0)" }
         func leftoverItem(_ url: URL, parent: String, m: SizeMeasurement, match: LeftoverMatch, key: String?,
-                          hasGit: Bool = false) -> CleanItem {
+                          hasGit: Bool = false, internalCommands: [String] = []) -> CleanItem {
             let label = parent.isEmpty ? "~" : (parent as NSString).lastPathComponent
             var note = match == .bundleID
                 ? "\(info.name) uygulamasının verisi (\(label); bundle id ile eşleşti)"
                 : "Adı benziyor; başka bir uygulamaya da ait olabilir (\(info.name), \(label))"
             if hasGit { note = Self.gitRepositoryNote + "; " + note }
+            if !internalCommands.isEmpty { note = Self.internalCommandNote(internalCommands) + "; " + note }
             return CleanItem(
                 category: .apps,
                 name: "\(info.name): \(url.lastPathComponent)",
                 path: url.path,
                 allocatedBytes: m.allocatedBytes,
-                risk: hasGit ? .red : (match == .bundleID && risk != .red ? .green : .yellow),
+                risk: hasGit || !internalCommands.isEmpty ? .red : (match == .bundleID && risk != .red ? .green : .yellow),
                 dateSignal: m.newestModification.map { .modified(days: DateSignal.days(from: $0, to: context.now)) } ?? .unknown,
                 lockReason: leftoverLock,
                 note: note,
@@ -308,7 +321,8 @@ public struct AppsScanner: Cleaner {
             out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .bundleID, key: nil))
         }
         for (l, m) in zip(named, namedSizes) {
-            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .name, key: l.key, hasGit: l.hasGitRepository))
+            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .name, key: l.key, hasGit: l.hasGitRepository,
+                                    internalCommands: l.internalCommands))
         }
         return out
     }

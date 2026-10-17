@@ -43,6 +43,7 @@ public enum LeftoverNames {
         ".azure", ".gcloud", ".docker", ".npm", ".pnpm-store", ".yarn", ".bun", ".cargo", ".rustup", ".gradle",
         ".m2", ".android", ".vscode", ".ssh", ".gnupg", ".profile", ".netrc", ".oh-my-zsh", ".nvm", ".fnm",
         ".pyenv", ".rbenv", ".cloudflared", ".wrangler", ".supabase", ".vercel", ".expo", ".cocoapods", ".swiftpm",
+        ".copilot", ".agents",
     ]
 
     /// Ana klasörde bu öneklerle başlayan gizli girdiler de asla ad artığı değildir (küçük harf).
@@ -166,9 +167,23 @@ struct InstalledApps: Sendable {
     }
 
     var entries: [Entry]
-    /// Komut satırı klasörlerindeki çalıştırılabilir adlar (normalize). Ana klasörde bu adla eşleşen gizli
-    /// girdi bir CLI aracının ayarıdır; hiçbir uygulamanın ad artığı olmaz.
-    var commandNames: Set<String> = []
+    /// Komut satırı klasörlerindeki çalıştırılabilirler: normalize ad → bulundukları yerler. Ana klasörde bu adla
+    /// eşleşen gizli girdi bir CLI aracının ayarıdır; hiçbir uygulamanın ad artığı olmaz (komut adayın kendi
+    /// içinde değilse, bkz. `commandMatches`).
+    var commands: [String: [CommandLocation]] = [:]
+
+    /// Normalize komut adları.
+    var commandNames: Set<String> { Set(commands.keys) }
+
+    /// Bir komutun yeri. Yalnız yol çözümü (`realpath`); içerik okunmaz.
+    struct CommandLocation: Sendable, Equatable {
+        /// Klasördeki adı (gösterim için).
+        var name: String
+        /// Girdinin kendisi: çözülmüş klasör + ad (girdi bağlantıysa bağlantının yeri), `PathUtil.key` biçiminde.
+        var entryKey: String
+        /// Girdinin tamamen çözülmüş yolu (bağlantıysa hedefi; sıradan dosyada kendisi). Kırık bağlantıda nil.
+        var targetKey: String?
+    }
 
     /// Paketin tam çözülmüş yol anahtarı (bağlantıyla gösterilen paket, gerçeğiyle aynı uygulama sayılır).
     static func bundleKey(_ url: URL) -> String {
@@ -176,7 +191,7 @@ struct InstalledApps: Sendable {
     }
 
     init(roots: [URL], reader: SafeReader, commandDirectories: [URL] = []) {
-        commandNames = InstalledApps.commandNames(in: commandDirectories)
+        commands = InstalledApps.commandCatalog(in: commandDirectories)
         let fm = FileManager.default
         var out: [Entry] = []
         var seen = Set<String>()
@@ -202,28 +217,66 @@ struct InstalledApps: Sendable {
     }
 
     /// Taranan komut satırı klasörü ve klasör başına girdi sınırı.
-    static let maxCommandDirectories = 128
+    static let maxCommandDirectories = 512
     static let maxCommandsPerDirectory = 20_000
 
-    /// Klasörlerdeki çalıştırılabilir adlar (normalize): sembolik bağlantı ya da çalıştırma biti olan sıradan
-    /// dosya. Yalnız ad listesi ve `lstat`; dosya içeriği okunmaz, bağlantı izlenmez.
-    static func commandNames(in dirs: [URL]) -> Set<String> {
+    /// Klasörlerdeki çalıştırılabilir adlar (normalize).
+    static func commandNames(in dirs: [URL]) -> Set<String> { Set(commandCatalog(in: dirs).keys) }
+
+    /// Klasörlerdeki çalıştırılabilirler (normalize ad → yerler): sembolik bağlantı ya da çalıştırma biti olan
+    /// sıradan dosya. Yalnız ad listesi, `lstat` ve `realpath`; dosya içeriği okunmaz.
+    static func commandCatalog(in dirs: [URL]) -> [String: [CommandLocation]] {
         let fm = FileManager.default
-        var out = Set<String>()
+        var out: [String: [CommandLocation]] = [:]
         var seen = Set<String>()
+        var seenEntries = Set<String>()
         for dir in dirs.prefix(maxCommandDirectories) where seen.insert(PathUtil.key(dir.standardizedFileURL.path)).inserted {
             guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+            let realDir = PathUtil.realPath(dir.path) ?? PathUtil.canonicalDirectory(dir)
             for n in names.prefix(maxCommandsPerDirectory) where !n.hasPrefix(".") {
+                let p = dir.appending(path: n).path
                 var st = stat()
-                guard lstat(dir.appending(path: n).path, &st) == 0 else { continue }
+                guard lstat(p, &st) == 0 else { continue }
                 let kind = st.st_mode & S_IFMT
                 guard kind == S_IFLNK || (kind == S_IFREG && (st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) != 0)
                 else { continue }
                 let k = LeftoverNames.normalize(n)
-                if !k.isEmpty { out.insert(k) }
+                guard !k.isEmpty else { continue }
+                let entryKey = PathUtil.key(realDir == "/" ? "/" + n : realDir + "/" + n)
+                guard seenEntries.insert(entryKey).inserted else { continue }
+                out[k, default: []].append(CommandLocation(name: n, entryKey: entryKey,
+                                                           targetKey: PathUtil.realPath(p).map(PathUtil.key)))
             }
         }
         return out
+    }
+
+    /// Ana klasördeki gizli girdinin adıyla (ya da `-` önekiyle) eşleşen komutlar, ikiye ayrılmış:
+    /// - `internal`: o adın BÜTÜN yerleri adayın içinde: hedefi adayın içinde (dışarıdan içeriye bağlantı dahil), ya
+    ///   da girdinin kendisi adayın içinde ve hedefi sahip uygulamanın paketinde ya da kırık (uygulama önce Çöp
+    ///   Kutusu'na taşındıysa). Bunlar çakışma değildir; aday silinince komut da çalışmaz (kırmızı + not).
+    /// - `conflicting`: en az bir yeri adayın dışında olan (ya da aday çözülemiyorsa hepsi) komutlar.
+    /// Yalnız ana klasör (`parent == ""`) için; diğer klasörlerde ikisi de boş.
+    func commandMatches(entry: String, parent: String, candidate: URL?, ownerBundleKey: String?)
+        -> (conflicting: [String], internal: [String]) {
+        guard parent.isEmpty else { return ([], []) }
+        let keys = LeftoverNames.entryKeys(entry, parent: parent, prefixes: true).intersection(commands.keys).sorted()
+        guard !keys.isEmpty else { return ([], []) }
+        let candKey = candidate.flatMap { PathUtil.realPath($0.standardizedFileURL.path) }.map(PathUtil.key)
+        var conflicting: [String] = [], internalNames: [String] = []
+        for k in keys {
+            let locs = commands[k] ?? []
+            let inside = !locs.isEmpty && candKey.map { c in
+                locs.allSatisfy { l in
+                    if let t = l.targetKey, PathUtil.isSameOrDescendant(t, of: c), t != c { return true }
+                    guard l.entryKey != c, PathUtil.isSameOrDescendant(l.entryKey, of: c) else { return false }
+                    guard let t = l.targetKey else { return true }
+                    return ownerBundleKey.map { PathUtil.isSameOrDescendant(t, of: $0) } ?? false
+                }
+            } ?? false
+            if inside { internalNames.append(locs.first?.name ?? k) } else { conflicting.append(k) }
+        }
+        return (conflicting, internalNames)
     }
 
     /// Girdi başka bir sahiple de eşleşiyorsa o sahibin tanımı (bundle id ya da "komut satırı aracı `x`").
@@ -232,10 +285,12 @@ struct InstalledApps: Sendable {
     ///   `.antigravity-ide` → "Antigravity IDE"nin, "Antigravity"nin değil). Sahip yalnız önekle eşleşiyorsa başka
     ///   uygulamanın her türlü eşleşmesi çakışmadır.
     /// - Ana klasörde: adı ya da herhangi bir `-` öneki bir komut satırı çalıştırılabiliriyle aynı olan girdi
-    ///   (ör. `~/.claude` ↔ `claude`) her zaman çakışmadır.
-    func conflict(entry: String, parent: String, excludingBundleKey: String?, ownerKey: String) -> String? {
-        if parent.isEmpty, let cmd = LeftoverNames.entryKeys(entry, parent: parent, prefixes: true)
-            .intersection(commandNames).sorted().first {
+    ///   (ör. `~/.claude` ↔ `claude`) çakışmadır.
+    ///   Komutun bütün yerleri adayın kendi içindeyse (`commandMatches`) çakışma sayılmaz.
+    func conflict(entry: String, parent: String, candidate: URL? = nil, excludingBundleKey: String?,
+                  ownerKey: String) -> String? {
+        if let cmd = commandMatches(entry: entry, parent: parent, candidate: candidate,
+                                    ownerBundleKey: excludingBundleKey).conflicting.first {
             return "komut satırı aracı `\(cmd)`"
         }
         let ownerExact = LeftoverNames.matchesExactly(entry: entry, parent: parent, key: ownerKey)

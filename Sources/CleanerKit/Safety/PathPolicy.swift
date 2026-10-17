@@ -24,7 +24,7 @@ public struct PathPolicy: Sendable {
     public let conflictOnlyAppRoots: [URL]
     /// Ad tabanlı artık çakışmasında çalıştırılabilir adlarına bakılan komut satırı klasörleri
     /// (`InstalledApps.commandNames`). Varsayılan: PATH + yaygın sistem/Homebrew klasörleri + ana klasördeki
-    /// bilinen araç klasörleri (`.local/bin`, npm, bun, cargo, nvm/fnm ...). Uygulama kökleri dışarıdan verilmişse
+    /// bilinen araç klasörleri (`.local/bin`, npm, bun, cargo, nvm/fnm, `~/.<x>/bin` ...). Uygulama kökleri dışarıdan verilmişse
     /// (test) yalnız ana klasördekiler.
     public let commandDirectories: [URL]
     /// Uygulama köklerinin yazıldığı (standart, çözülmemiş) yollarının anahtarları.
@@ -84,8 +84,26 @@ public struct PathPolicy: Sendable {
         ".local/bin", "bin", ".npm-global/bin", ".bun/bin", ".cargo/bin", ".deno/bin", "go/bin", ".volta/bin",
         ".yarn/bin", "Library/pnpm", ".fnm/aliases/default/bin", ".local/share/fnm/aliases/default/bin",
         "Library/Application Support/fnm/aliases/default/bin", ".pyenv/shims", ".rbenv/shims", ".rd/bin",
-        ".docker/bin", ".lmstudio/bin", ".opencode/bin", ".claude/local",
+        ".docker/bin", ".lmstudio/bin", ".opencode/bin", ".claude/local", ".railway/bin",
     ]
+    /// Ana klasördeki `~/.<x>/bin` klasörlerinden en çok bu kadarı (yalnız doğrudan `~/.<x>/bin`) eklenir.
+    static let maxHomeDotBinDirectories = 64
+
+    /// Ana klasördeki gizli klasörlerin doğrudan `bin` klasörleri (`~/.<x>/bin`), ada göre sıralı, en çok
+    /// `maxHomeDotBinDirectories`. Yalnız ad listesi ve `lstat`.
+    static func homeDotBinDirectories(home: URL) -> [URL] {
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? [])
+            .filter { $0.hasPrefix(".") && $0 != "." && $0 != ".." }.sorted()
+        var out: [URL] = []
+        for n in names {
+            let bin = home.appending(path: n).appending(path: "bin")
+            var st = stat()
+            guard lstat(bin.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { continue }
+            out.append(bin)
+            if out.count >= maxHomeDotBinDirectories { break }
+        }
+        return out
+    }
     /// Ana klasöre göreli, sürüm başına `bin` içeren klasörler (`<kök>/<sürüm>/<son ek>`).
     static let homeVersionedCommandDirectories = [
         (".nvm/versions/node", "bin"), (".local/share/fnm/node-versions", "installation/bin"),
@@ -94,7 +112,7 @@ public struct PathPolicy: Sendable {
 
     /// Varsayılan komut satırı klasörleri. `includeSystem`: PATH ve sistem/Homebrew klasörleri de.
     public static func defaultCommandDirectories(home: URL, includeSystem: Bool) -> [URL] {
-        var out: [URL] = homeCommandDirectories.map { home.appending(path: $0) }
+        var out: [URL] = homeCommandDirectories.map { home.appending(path: $0) } + homeDotBinDirectories(home: home)
         let fm = FileManager.default
         for (root, suffix) in homeVersionedCommandDirectories {
             let r = home.appending(path: root)

@@ -245,7 +245,7 @@ struct LeftoverHardeningTrashTests {
         #expect(moved.n == 0)
     }
 
-    @Test("kurulu uygulamalar ve süreç listesi çalıştırma başına bir kez okunur")
+    @Test("kurulu uygulamalar çalıştırma başına bir kez, süreç listesi her artıkta okunur")
     func environmentOncePerRun() async throws {
         let (t, p, app) = try setup()
         let ls = [named(try t.dir(".zeplin"), app), named(try t.dir("Library/Caches/Zeplin"), app),
@@ -254,7 +254,7 @@ struct LeftoverHardeningTrashTests {
         let moved = Counter()
         let r = try await trasher(p, t, moved, processes: procs).trash(ids: ls.map(\.id), scan: [app] + ls, dryRun: true)
         #expect(r.done.count == 3 && r.refused.isEmpty, "\(r)")
-        #expect(procs.calls == 1)
+        #expect(procs.calls == 3)
     }
 }
 

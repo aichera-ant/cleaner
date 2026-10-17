@@ -206,18 +206,25 @@ public struct Trasher: Sendable {
     }
 
     /// Artık doğrulaması için çalıştırma başına bir kez okunan bilgiler: kurulu uygulamalar (komut satırı
-    /// çalıştırılabilir adları dahil) ve süreç listesi. Uygulama paketleri taşındıktan sonra, ilk artıktan hemen
-    /// önce kurulur.
+    /// çalıştırılabilirleri ve yerleri dahil). Uygulama paketleri taşındıktan sonra, ilk artıktan hemen önce kurulur.
+    /// Süreç listesi burada tutulmaz: her artık taşımasından hemen önce yeniden okunur (`ProcessSnapshot`).
     struct LeftoverEnvironment {
         let reader: SafeReader
         let installed: InstalledApps
-        let processes: [RunningProcess]
-        let running: RunningApps
 
-        init(policy: PathPolicy, processes lister: any ProcessListing) {
+        init(policy: PathPolicy) {
             reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
             installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader,
                                       commandDirectories: policy.commandDirectories)
+        }
+    }
+
+    /// Süreç listesinin anlık görüntüsü (artık başına bir kez).
+    struct ProcessSnapshot {
+        let processes: [RunningProcess]
+        let running: RunningApps
+
+        init(lister: any ProcessListing, reader: SafeReader) {
             processes = lister.runningProcesses()
             running = RunningApps(processes: processes, reader: reader)
         }
@@ -236,20 +243,22 @@ public struct Trasher: Sendable {
         guard let parent, parent.id == item.parentAppID, parent.category == .apps, !parent.isLeftover,
               parent.path.lowercased().hasSuffix(".app"), let bundleID = item.appBundleID
         else { return "artık: uygulama öğesi bu taramada yok" }
-        let env = env ?? LeftoverEnvironment(policy: policy, processes: processes)
+        let env = env ?? LeftoverEnvironment(policy: policy)
+        // Çalışıyor denetimi her artıkta taze süreç listesiyle (taşıma sırasında açılan uygulama).
+        let procs = ProcessSnapshot(lister: processes, reader: env.reader)
         var st = stat()
         let parentKey = InstalledApps.bundleKey(parent.url)
         if lstat(parent.path, &st) == 0 {
             guard let info = AppBundleInfo.read(parent.url, reader: env.reader),
                   info.bundleID.lowercased() == bundleID.lowercased()
             else { return "artık: uygulama değişti (bundle id uyuşmuyor)" }
-            if env.running.isRunning(bundle: parent.url, bundleID: bundleID) || env.isRunning(name: info.name) {
+            if procs.running.isRunning(bundle: parent.url, bundleID: bundleID) || procs.isRunning(name: info.name) {
                 return "artık: uygulama çalışıyor"
             }
             if isSelf(bundle: parent.url, bundleID: bundleID) { return "artık: Cleaner'ın kendisi" }
         } else {
             // Uygulama bu arada kaldırılmış: artık sahipsiz; yine de aynı kimlikle çalışan süreç olmamalı.
-            if env.running.isRunning(bundle: parent.url, bundleID: bundleID) || env.isRunning(name: parent.name) {
+            if procs.running.isRunning(bundle: parent.url, bundleID: bundleID) || procs.isRunning(name: parent.name) {
                 return "artık: uygulama çalışıyor"
             }
             if let selfBundleID, selfBundleID.lowercased() == bundleID.lowercased() { return "artık: Cleaner'ın kendisi" }
@@ -260,9 +269,14 @@ public struct Trasher: Sendable {
         if item.leftoverMatch == .name {
             guard let rel = policy.nameLeftoverParent(for: item.url), let key = item.matchedName
             else { return "artık: izinli klasörde değil" }
-            if let other = env.installed.conflict(entry: item.url.lastPathComponent, parent: rel,
+            if let other = env.installed.conflict(entry: item.url.lastPathComponent, parent: rel, candidate: item.url,
                                                   excludingBundleKey: parentKey, ownerKey: key) {
                 return "artık: başka kurulu uygulamayla da eşleşiyor (\(other))"
+            }
+            // İçinde kendi komutu olan aday taramada kırmızı işaretlenmiş olmalı (taramadan sonra kurulduysa yeniden tara).
+            if item.risk != .red, !env.installed.commandMatches(entry: item.url.lastPathComponent, parent: rel,
+                                                               candidate: item.url, ownerBundleKey: parentKey).internal.isEmpty {
+                return "artık: içinde komut satırı aracı var; yeniden tara"
             }
         }
         return nil
@@ -450,13 +464,14 @@ public struct Trasher: Sendable {
         // Yetkili taşıyıcıya toplu verilecek uygulama paketleri (tek parola). Artıklardan önce taşınır.
         var pendingPrivileged: [CleanItem] = []
         var batchDone = false
-        // Artık doğrulaması için kurulu uygulamalar ve süreç listesi: çalıştırma başına bir kez (paketlerden sonra).
+        // Artık doğrulaması için kurulu uygulamalar: çalıştırma başına bir kez (paketlerden sonra). Süreç listesi
+        // her artıkta yeniden okunur.
         var leftoverEnv: LeftoverEnvironment?
         for item in ordered {
             if item.isLeftover, !batchDone {
                 batchDone = true
                 await flushPrivileged(&pendingPrivileged, report: &report, failedApps: &failedApps, covered: &coveredKeys)
-                leftoverEnv = LeftoverEnvironment(policy: policy, processes: processes)
+                leftoverEnv = LeftoverEnvironment(policy: policy)
             }
             if item.isLeftover, let parentID = item.parentAppID, failedApps.contains(parentID) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appFailedSkip))
