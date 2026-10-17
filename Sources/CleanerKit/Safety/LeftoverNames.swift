@@ -69,8 +69,8 @@ public enum LeftoverNames {
         return nil
     }
 
-    /// Ana klasördeki `~/.<x>` bağımsız bir komut satırı aracının kurulum klasörü mü (ör. `~/.deno`)? (kullanıcı
-    /// kararı, 2026-10-17: böyle klasör, aynı adlı uygulama kurulu olsa bile, hiçbir zaman ad artığı adayı olmaz.)
+    /// Ana klasördeki `~/.<x>` bağımsız bir komut satırı aracının kurulum klasörü mü (ör. `~/.deno`)? (Karar,
+    /// 2026-10-17: böyle klasör, aynı adlı uygulama kurulu olsa bile, hiçbir zaman ad artığı adayı olmaz.)
     ///
     /// Koşul: `bin/` alt klasörü (doğrudan ya da aynı klasörün içine giden bağlantı, ör. `versions/current/bin`;
     /// dışarıya giden bağlantı sayılmaz) en az bir bağımsız çalıştırılabilir içeriyor: çalıştırma

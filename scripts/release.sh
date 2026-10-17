@@ -2,6 +2,8 @@
 # Sürüm hazırlar: build-app.sh → make-dmg.sh → Sparkle sign_update + appcast.xml.
 # Çıktı: build/release/Hepp-Cleaner-<sürüm>.dmg ve build/release/appcast.xml (EdDSA imzalı öğe).
 # YAYINLAMAZ: GitHub Release'i yönetici açar; sonda çalıştırılacak `gh release create` komutu yazdırılır.
+# Komut yalnız scripts/release-check.sh temizse ve EdDSA imzası yerelde doğrulandıysa basılır; değilse
+# "DENEME DERLEMESİ, YAYINLAMAYIN" yazar ve 1 ile çıkar (yerel deneme dosyaları yine üretilir).
 # Sürüm: App/project.yml MARKETING_VERSION ve CURRENT_PROJECT_VERSION (her yayında yapı numarası +1).
 #
 # Ortam değişkenleri (yalnız yerel deneme için):
@@ -31,6 +33,9 @@ MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PLIST")"
 TAG="v$VERSION"
 DOWNLOAD_BASE="${DOWNLOAD_BASE:-https://github.com/$REPO/releases/download/$TAG/}"
 [[ "$DOWNLOAD_BASE" == */ ]] || DOWNLOAD_BASE="$DOWNLOAD_BASE/"
+
+# Yayına uygunluk (deneme ezmeleri, feed, imza, runtime). Sonuç sonda, yayın komutundan önce uygulanır.
+CHECK_PROBLEMS="$(scripts/release-check.sh "$APP" "$DOWNLOAD_BASE")" || true
 
 # Her yayının appcast'i yalnız kendi öğesini taşır: SUFeedURL "latest/download/appcast.xml" hep son yayını gösterir.
 rm -rf "$REL"
@@ -92,11 +97,13 @@ VTMP="$(mktemp -d "${TMPDIR:-/tmp}/hepp-verify.XXXXXX")"
 base64 -D <<<"$SIG" >"$VTMP/sig.bin"
 # Sistem LibreSSL'i Ed25519 doğrulayamaz; Homebrew OpenSSL 3+ gerekir.
 OSSL="$(command -v /opt/homebrew/bin/openssl || command -v /usr/local/bin/openssl || command -v openssl)"
-if ! "$OSSL" version | grep -q '^OpenSSL [3-9]'; then
+EDDSA_VERIFIED=0
+if [[ "$("$OSSL" version 2>/dev/null)" != "OpenSSL "[3-9]* ]]; then
   rm -rf "$VTMP"
   echo "Uyarı: OpenSSL 3+ yok (brew install openssl); EdDSA imzası yerelde doğrulanmadı." >&2
 elif "$OSSL" pkeyutl -verify -pubin -keyform DER -inkey "$VTMP/pub.der" -rawin -in "$DMG" -sigfile "$VTMP/sig.bin" >/dev/null 2>&1; then
   rm -rf "$VTMP"
+  EDDSA_VERIFIED=1
 else
   rm -rf "$VTMP"
   echo "EdDSA imzası SUPublicEDKey ile doğrulanamadı (anahtar zincirindeki anahtar Info.plist'tekiyle aynı mı?)" >&2
@@ -106,9 +113,20 @@ fi
 echo
 echo "Hazır: $ROOT/$REL"
 echo "  $DMG_NAME  sürüm $VERSION, yapı $BUILD"
-echo "  appcast.xml  indirme: ${DOWNLOAD_BASE}${DMG_NAME}  (EdDSA imzası doğrulandı)"
+if ((EDDSA_VERIFIED)); then
+  echo "  appcast.xml  indirme: ${DOWNLOAD_BASE}${DMG_NAME}  (EdDSA imzası doğrulandı)"
+else
+  echo "  appcast.xml  indirme: ${DOWNLOAD_BASE}${DMG_NAME}  (EdDSA imzası DOĞRULANMADI)"
+  CHECK_PROBLEMS+="${CHECK_PROBLEMS:+$'\n'}EdDSA imzası yerelde doğrulanmadı (OpenSSL 3+ gerekir: brew install openssl)"
+fi
 if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
   echo "Uyarı: çalışma ağacında commit edilmemiş değişiklik var." >&2
+fi
+if [[ -n "$CHECK_PROBLEMS" ]]; then
+  echo >&2
+  sed 's/^/  - /' <<<"$CHECK_PROBLEMS" >&2
+  echo "DENEME DERLEMESİ, YAYINLAMAYIN." >&2
+  exit 1
 fi
 cat <<EOF
 

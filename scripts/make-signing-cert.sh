@@ -52,9 +52,9 @@ EOF
   "$OPENSSL" pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -name "$NAME" \
     -out "$TMP/id.p12" -passout "pass:$P12PASS"
   rm -f "$TMP/key.pem"
-  # -T: codesign anahtarı her seferinde sormadan kullanabilsin.
+  # -T: yalnız codesign anahtarı sormadan kullanabilsin (başka araç, ör. security, anahtarı dışa veremesin).
   security import "$TMP/id.p12" -k "$KEYCHAIN" -f pkcs12 -P "$P12PASS" \
-    -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+    -T /usr/bin/codesign >/dev/null
   unset P12PASS
   echo "Sertifika ve özel anahtar login anahtar zincirine eklendi."
 fi
@@ -68,7 +68,7 @@ if valid_identity; then
   security find-identity -v -p codesigning "$KEYCHAIN" | grep "\"$NAME\""
   cat <<EOF
 Not: codesign ilk kullanımda anahtar erişimi sorarsa "Her Zaman İzin Ver" deyin. Sormadan çalışsın isterseniz:
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -l "$NAME" "$KEYCHAIN"
+  security set-key-partition-list -S codesign: -s -l "$NAME" "$KEYCHAIN"
 (login parolanızı ister).
 EOF
 else

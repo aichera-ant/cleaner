@@ -8,3 +8,8 @@ Package.resolved.bak
 build/
 *.xcodeproj
 .claude/worktrees/
+
+# İmza anahtarı / sertifika dışa aktarımları asla depoya girmez.
+*.p12
+*.key
+*.pem

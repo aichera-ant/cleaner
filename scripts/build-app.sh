@@ -57,10 +57,12 @@ grep -E "warning:|BUILD SUCCEEDED" "$LOG" | sort -u | head -n 10 || true
 # ditto: framework sembolik bağlarını ve genişletilmiş öznitelikleri korur.
 ditto "build/DerivedData/Build/Products/$CONFIG/$APP_NAME.app" "$APP"
 
-# İç içe kod içten dışa imzalanır (--deep yerine). Hardened runtime kapalı (-o runtime yok): notarization yok.
+# İç içe kod içten dışa imzalanır (--deep yerine). Hardened runtime açık (--options runtime): DYLD ile
+# kitaplık eklenerek uygulamanın Tam Disk Erişimi / Otomasyon izninin devralınmasını engeller (docs/DAGITIM.md).
+ENTITLEMENTS="App/Cleaner.entitlements"
 sign() {
   local out
-  out="$(codesign --force --timestamp=none --sign "$SIGN_IDENTITY" "$@" 2>&1)" || { echo "$out" >&2; return 1; }
+  out="$(codesign --force --timestamp=none --options runtime --sign "$SIGN_IDENTITY" "$@" 2>&1)" || { echo "$out" >&2; return 1; }
 }
 
 FW="$APP/Contents/Frameworks"
@@ -78,8 +80,10 @@ if [[ -d "$FW" ]]; then
   find "$FW" -maxdepth 1 \( -name "*.framework" -o -name "*.dylib" \) ! -name "Sparkle.framework" -print0 |
     while IFS= read -r -d '' f; do sign "$f"; done
 fi
-sign "$APP"
+sign --entitlements "$ENTITLEMENTS" "$APP"
 
 codesign --verify --deep --strict --verbose=1 "$APP"
+RT_RE='flags=0x[0-9a-f]+\([^)]*runtime'
+[[ "$(codesign -dv "$APP" 2>&1)" =~ $RT_RE ]] || { echo "Hardened runtime bayrağı yok: $APP" >&2; exit 1; }
 codesign -d -r- "$APP" 2>/dev/null | sed -n 's/^designated => /designated: /p'
 echo "Hazır: $ROOT/$APP"

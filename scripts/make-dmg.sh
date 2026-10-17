@@ -10,6 +10,12 @@ OUT_DIR="${OUT_DIR:-build}"
 
 [[ -d "$APP" ]] || { echo "Uygulama yok: $APP (önce scripts/build-app.sh)" >&2; exit 1; }
 codesign --verify --deep --strict "$APP" || { echo "Uygulamanın imzası geçersiz: $APP" >&2; exit 1; }
+# Ad-hoc ya da runtime'sız derleme DMG'ye girmez (izinler düşer / DYLD koruması yok; docs/DAGITIM.md).
+DR="$(codesign -d -r- "$APP" 2>&1 || true)"
+[[ "$DR" == *"designated => "*"certificate root"* ]] ||
+  { echo "Designated requirement sertifikaya bağlı değil (ad-hoc?): $APP" >&2; exit 1; }
+RT_RE='flags=0x[0-9a-f]+\([^)]*runtime'
+[[ "$(codesign -dv "$APP" 2>&1)" =~ $RT_RE ]] || { echo "Hardened runtime bayrağı yok: $APP" >&2; exit 1; }
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")"

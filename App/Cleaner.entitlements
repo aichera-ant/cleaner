@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Finder'a Apple Event ile Çöp Kutusu'na taşıma (hardened runtime altında gerekli). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<!-- Kendinden imzalı sertifikada Team ID yok; library validation açıkken Sparkle.framework
+	     "different Team IDs" hatasıyla yüklenemiyor (denendi, docs/DAGITIM.md). DYLD_* değişkenleri
+	     hardened runtime altında yine yok sayılır (allow-dyld-environment-variables verilmedi). -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
