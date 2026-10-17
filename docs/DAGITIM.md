@@ -16,19 +16,20 @@ scripts/make-signing-cert.sh
   extendedKeyUsage codeSigning), login anahtar zincirine koyar ve yalnız kod imzalama için güvenilir yapar.
 - Özel anahtar yalnız geçici dizinde durur, betik bitince silinir. Kimlik varsa betik bir şey yapmaz.
 - macOS güven ayarı için parola/Touch ID isteyebilir. `codesign` anahtar erişimi sorarsa "Her Zaman İzin Ver".
-- Özel anahtarın erişim listesinde (ACL) yalnız `/usr/bin/codesign` var; partition list önerisi yalnız
-  `codesign:`. `/usr/bin/security` ve `apple-tool:` bilinçli olarak yok: aksi hâlde aynı kullanıcıyla çalışan
-  herhangi bir betik `security` üzerinden anahtarı sormadan kullanabilir ya da dışa aktarabilir.
+- Özel anahtarın erişim listesinde (ACL) yalnız `/usr/bin/codesign` var; partition list `apple:,codesign:`.
+  `/usr/bin/security` ve `apple-tool:` bilinçli olarak yok: aksi hâlde aynı kullanıcıyla çalışan herhangi bir
+  betik `security` üzerinden anahtarı sormadan kullanabilir ya da dışa aktarabilir. `apple:` gerekli:
+  `/usr/bin/codesign` Apple imzalı olduğu için yalnız `codesign:` ile her imzada parola sorulur (bu Mac'te
+  denendi, 2026-10-18). Erişim yine ACL ile yalnız codesign'a açıktır.
+- Özel anahtarın anahtar zincirindeki adı "Imported Private Key"dir (p12 içe aktarmasından); `-l` bu ada bakar.
 - **Eski kurulumdaki anahtarı daraltma (elle, bir kez).** Betiğin eski sürümü anahtarı
   `-T /usr/bin/security` ve `apple-tool:,apple:,codesign:` ile eklemişti; betik mevcut öğeye dokunmaz.
-  1. Anahtar Zinciri Erişimi > login > Anahtarlar > "Hepp Cleaner Local" özel anahtarı > Bilgi Al >
+  1. Anahtar Zinciri Erişimi > Oturum açma > Anahtarlar > "Imported Private Key" (altında "Hepp Cleaner Local") > Bilgi Al >
      Erişim Denetimi: listede `security` varsa seçip "−" ile silin, yalnız `codesign` kalsın,
      Değişiklikleri Kaydet (parola ister).
   2. Terminal (login parolasını sorar):
-     `security set-key-partition-list -S codesign: -s -l "Hepp Cleaner Local" ~/Library/Keychains/login.keychain-db`
-  3. `scripts/build-app.sh` ile deneyin. codesign artık anahtar erişimi sorarsa "Her Zaman İzin Ver";
-     yine her seferinde sorarsa 2. adımı `-S apple-tool:,codesign:` ile yineleyin (yalnız `codesign:`
-     ile sorunsuz çalıştığı bu Mac'te henüz doğrulanmadı).
+     `security set-key-partition-list -S apple:,codesign: -s -l "Imported Private Key" ~/Library/Keychains/login.keychain-db`
+  3. `scripts/build-app.sh` ile deneyin; codesign anahtar erişimi sormamalı.
 - Doğrulama: `security find-identity -v -p codesigning` çıktısında `"Hepp Cleaner Local"`.
 
 Neden: ad-hoc imzada her derlemenin kimliği (cdhash) değişir; macOS Tam Disk Erişimi ve Otomasyon

@@ -68,7 +68,7 @@ if valid_identity; then
   security find-identity -v -p codesigning "$KEYCHAIN" | grep "\"$NAME\""
   cat <<EOF
 Not: codesign ilk kullanımda anahtar erişimi sorarsa "Her Zaman İzin Ver" deyin. Sormadan çalışsın isterseniz:
-  security set-key-partition-list -S codesign: -s -l "$NAME" "$KEYCHAIN"
+  security set-key-partition-list -S apple:,codesign: -s -l "Imported Private Key" "$KEYCHAIN"
 (login parolanızı ister).
 EOF
 else
