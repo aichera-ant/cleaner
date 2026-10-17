@@ -83,7 +83,7 @@ public protocol PermissionProbe: Sendable {
 @MainActor
 @Observable
 public final class PermissionModel {
-    public static let seenKey = "permissionsSeen"
+    public nonisolated static let seenKey = "permissionsSeen"
     public static let appManagementKey = "appManagementMarked"
 
     public private(set) var fullDisk: ProbeResult = .unknown

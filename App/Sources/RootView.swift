@@ -16,6 +16,20 @@ struct RootView: View {
         }
         .background(Theme.window)
         .overlay { SheetLayer(model: model, ui: ui, perms: perms) }
+        .overlay {
+            if let onboarding = ui.onboarding {
+                OnboardingView(onboarding: onboarding, perms: perms, notifications: ui.notifications,
+                               loginItem: ui.loginItem, onFinish: {
+                    onboarding.finish()
+                    perms.markSeen()
+                    // Açılışta altta hazırlanmış izin sayfası varsa kapat; akış zaten izinleri gösterdi.
+                    if ui.sheet == .permissions { ui.sheet = nil }
+                    ui.onboarding = nil
+                })
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: ui.onboarding == nil)
         .background(WindowConfigurator())
         .onChange(of: model.outcome) { _, o in
             // Uygulama Yönetimi kaynaklı ret görülürse işaret kalkar ve ekran yeniden önerilir.

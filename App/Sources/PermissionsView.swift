@@ -77,7 +77,7 @@ struct PermissionsSheet: View {
     }
 }
 
-private struct Badge: View {
+struct Badge: View {
     let status: PermissionStatus
     var body: some View {
         let (color, symbol): (Color, String) = switch status {
