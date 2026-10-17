@@ -12,7 +12,7 @@ import Foundation
 ///
 /// Tek dar istisna (karar, 2026-10-16): `apps` kategorisindeki öğe olarak, bir uygulama kökünün
 /// DOĞRUDAN çocuğu olan gerçek `.app` paketi (`appBundleRejectionReason`) ve o paketin bundle id'siyle
-/// tam eşleşen `~/Library` artıkları (`leftoverRejectionReason`). Çalışan, Apple ve Cleaner'ın kendisi
+/// tam eşleşen `~/Library` artıkları (`leftoverRejectionReason`). Çalışan, Apple ve Hepp Cleaner'ın kendisi
 /// kontrolü `Trasher`'dadır. Başka hiçbir sistem yolu açılmaz.
 public struct PathPolicy: Sendable {
     public let home: URL
@@ -235,7 +235,7 @@ public struct PathPolicy: Sendable {
     /// `.app` paketi Çöp Kutusu'na taşınamıyorsa nedenini döner. Yalnız `apps` öğeleri için; şunları denetler:
     /// yazıldığı haliyle ve çözülmüş haliyle bir uygulama kökünün DOĞRUDAN çocuğu, adı `<Ad>.app`, kendisi
     /// sembolik bağlantı değil gerçek klasör, kök sembolik bağlantı değil, kullanıcı paketi ve kökü yazabiliyor.
-    /// Bundle id (Apple), çalışan uygulama ve Cleaner'ın kendisi `Trasher`'da denetlenir.
+    /// Bundle id (Apple), çalışan uygulama ve Hepp Cleaner'ın kendisi `Trasher`'da denetlenir.
     ///
     /// `allowingAuthorization`: true ise yalnız yetkiyle aşılabilen yazma sorunu (`AppWriteAccess.needsAuthorization`:
     /// Uygulama Yönetimi koruması, root sahipliği) ret nedeni sayılmaz; diğer bütün koşullar aynen geçerlidir.

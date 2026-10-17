@@ -84,7 +84,7 @@ public final class LoginItemModel {
         let actual = status == .enabled || status == .requiresApproval
         if prefs.settings.launchAtLogin != actual { prefs.settings.launchAtLogin = actual }
         if status == .requiresApproval {
-            message = "Sistem Ayarları > Genel > Açılış Öğeleri'nde Cleaner'a izin vermen gerekiyor."
+            message = "Sistem Ayarları > Genel > Açılış Öğeleri'nde Hepp Cleaner'a izin vermen gerekiyor."
         } else if message?.hasPrefix("Sistem Ayarları") == true {
             message = nil
         }

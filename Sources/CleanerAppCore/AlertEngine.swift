@@ -90,7 +90,7 @@ public enum AlertEngine {
         if sample.availableBytes < threshold {
             if s.lowSpaceEnabled, st.lowLastDay != today || st.lowRearm {
                 alerts.append(NotificationAlert(kind: .lowSpace, title: "Boş alan azaldı",
-                                    body: "Mac'inde \(Fmt.bytes(sample.availableBytes)) boş alan kaldı. Cleaner ile neleri temizleyebileceğine bakabilirsin."))
+                                    body: "Mac'inde \(Fmt.bytes(sample.availableBytes)) boş alan kaldı. Hepp Cleaner ile neleri temizleyebileceğine bakabilirsin."))
                 st.lowLastDay = today
                 st.lowRearm = false
             }

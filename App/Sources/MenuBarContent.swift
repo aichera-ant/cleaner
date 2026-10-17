@@ -15,7 +15,7 @@ struct MenuBarContent: View {
         Text(MenuSummary.diskLine(monitor.disk))
         Text(MenuSummary.scanLine(latest, now: Date()))
         Divider()
-        Button("Cleaner'ı aç") { WindowOpener.showMain(openWindow: openWindow) }
+        Button("Hepp Cleaner'ı aç") { WindowOpener.showMain(openWindow: openWindow) }
         Button("Şimdi tara") {
             WindowOpener.showMain(openWindow: openWindow)
             Task { await model.startScan() }
@@ -24,7 +24,7 @@ struct MenuBarContent: View {
         SettingsLink { Text("Ayarlar…") }
             .keyboardShortcut(",")
         Divider()
-        Button("Çık") { NSApp.terminate(nil) }
+        Button("Hepp Cleaner'dan çık") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }
 }

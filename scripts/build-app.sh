@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Cleaner.app üretir: xcodegen + xcodebuild. Çıktı: build/Cleaner.app (ad-hoc imzalı; dağıtım İP4).
+# Hepp Cleaner.app üretir: xcodegen + xcodebuild. Çıktı: build/Hepp Cleaner.app (ad-hoc imzalı; dağıtım İP4).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+APP_NAME="Hepp Cleaner"
+APP="build/$APP_NAME.app"
 # CONFIG=Debug ile derlenirse --snapshot (PNG üretimi) etkin olur; Release'te yok.
 CONFIG="${CONFIG:-Release}"
 
@@ -10,7 +12,7 @@ command -v xcodegen >/dev/null || { echo "xcodegen yok (brew install xcodegen)" 
 
 ( cd App && xcodegen generate --quiet )
 
-rm -rf build/Cleaner.app
+rm -rf "$APP"
 mkdir -p build
 LOG=build/xcodebuild.log
 if ! xcodebuild \
@@ -27,7 +29,7 @@ if ! xcodebuild \
 fi
 grep -E "warning:|BUILD SUCCEEDED" "$LOG" | sort -u | head -n 10 || true
 
-cp -R build/DerivedData/Build/Products/$CONFIG/Cleaner.app build/Cleaner.app
-codesign --force --deep --sign - build/Cleaner.app >/dev/null
-codesign --verify --verbose=1 build/Cleaner.app
-echo "Hazır: $ROOT/build/Cleaner.app"
+cp -R "build/DerivedData/Build/Products/$CONFIG/$APP_NAME.app" "$APP"
+codesign --force --deep --sign - "$APP" >/dev/null
+codesign --verify --verbose=1 "$APP"
+echo "Hazır: $ROOT/$APP"

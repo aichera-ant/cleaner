@@ -150,7 +150,7 @@ enum Output {
         var out: [String] = []
         if let lock = item.lockReason { out.append("kilit: " + oneLine(lock)) }
         if item.needsAuthorization == true {
-            out.append("yetki gerekir: macOS parola ya da Touch ID; CLI taşımaz, Cleaner uygulamasından kaldırın")
+            out.append("yetki gerekir: macOS parola ya da Touch ID; CLI taşımaz, Hepp Cleaner uygulamasından kaldırın")
         }
         if let g = item.groupID {
             let keeper = item.keeperPath.map { tilde($0, home: home) } ?? "?"

@@ -11,7 +11,7 @@ struct SidebarView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Spacer().frame(width: 62) // trafik ışıkları için yer
-                Text("Cleaner").font(.system(size: 13, weight: .bold, design: .rounded))
+                Text("Hepp Cleaner").font(.system(size: 13, weight: .bold, design: .rounded))
                 Spacer()
             }
             .frame(height: 52)

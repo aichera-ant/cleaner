@@ -16,7 +16,7 @@ import Foundation
 ///     komutu kendi içinde olan (uygulamanın kendi CLI'ı, `InstalledApps.commandMatches`) girdi kırmızı.
 ///   - Uygulama kilitliyse (çalışıyor, Cleaner, yapısal ret) artıkları da kilitlidir; uygulama kırmızıysa (komut
 ///     satırı bağlantısı) kesin artıklar da sarıdır. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
-/// - Kilit yalnız: çalışan, Cleaner'ın kendisi ve dar istisnanın yapısal reddi (`.rejected`, `.blocked`: iç içe,
+/// - Kilit yalnız: çalışan, Hepp Cleaner'ın kendisi ve dar istisnanın yapısal reddi (`.rejected`, `.blocked`: iç içe,
 ///   bağlantı, başka kullanıcının paketi ...). Kullanım işaretleri kilit değil, uyarıdır (karar kullanıcıda,
 ///   `preselect = false`): komut satırı bağlantısı kırmızı, son `staleDays` günde açılan ya da Spotlight kaydı
 ///   olmayıp artığı son `staleDays` günde değişen sarı. Geri kalanı (hiç açılmamış ya da uzun süredir açılmamış)
@@ -228,7 +228,7 @@ public struct AppsScanner: Cleaner {
         let bundleKey = PathUtil.key(PathUtil.canonical(bundle))
         let cliUse = cliLinks.first { PathUtil.isSameOrDescendant($0.target, of: bundleKey) }
 
-        // Kilit yalnız: çalışıyor, Cleaner'ın kendisi, dar istisnanın yapısal reddi. Kullanım işaretleri (komut
+        // Kilit yalnız: çalışıyor, Hepp Cleaner'ın kendisi, dar istisnanın yapısal reddi. Kullanım işaretleri (komut
         // satırı bağlantısı, yakın açılış, yakın kullanım izi) kilit değil, uyarıdır: karar kullanıcıda.
         var lock: String?
         var risk = Risk.yellow
@@ -237,7 +237,7 @@ public struct AppsScanner: Cleaner {
         if running.isRunning(bundle: bundle, bundleID: info.bundleID) || context.signals.processes.isRunning(info.name) {
             lock = "çalışıyor"
         } else if Self.isSelf(bundle: bundle, bundleID: info.bundleID) {
-            lock = "Cleaner'ın kendisi"
+            lock = "Hepp Cleaner'ın kendisi"
         } else {
             switch policy.appBundleCheck(for: bundle) {
             case .rejected(let reason): lock = reason

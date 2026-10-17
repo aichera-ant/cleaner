@@ -44,7 +44,7 @@ struct CleanerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Cleaner", id: "main") {
+        WindowGroup("Hepp Cleaner", id: "main") {
             RootView(model: model, ui: ui, perms: perms)
                 .safeAreaInset(edge: .top, spacing: 0) { LoginNoticeBar(login: login) }
                 .onAppear { if perms.shouldPresentOnLaunch { ui.sheet = .permissions } }
