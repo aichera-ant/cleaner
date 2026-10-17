@@ -32,7 +32,7 @@ struct CleanerApp: App {
             monitor.start()
             // Uyku sonrası hemen bir örnek al.
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
-                Task { @MainActor in await monitor.tick() }
+                Task { @MainActor in await monitor.tick(awaitWeekly: false) }
             }
         }
         #if DEBUG
