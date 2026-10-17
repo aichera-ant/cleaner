@@ -6,7 +6,9 @@ public enum Fmt {
         let f = ByteCountFormatter()
         f.countStyle = .file
         f.allowsNonnumericFormatting = false // "Zero KB" yerine "0 KB"
+        if b == 0 { return "0 bayt" }
         return f.string(fromByteCount: Int64(clamping: b))
+            .replacingOccurrences(of: " bytes", with: " bayt").replacingOccurrences(of: " byte", with: " bayt")
     }
 
     /// Risk rozeti metni (demo ile aynı).

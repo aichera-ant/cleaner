@@ -1,5 +1,6 @@
 import CleanerAppCore
 import CleanerKit
+import Foundation
 import Observation
 
 enum Section: Hashable {
@@ -19,4 +20,8 @@ final class UIState {
 
     var section: Section = .overview
     var sheet: Sheet?
+    /// Kategori listelerinin ortak sıralaması; UserDefaults'ta hatırlanır.
+    var sort: ItemSort = ItemSort(rawValue: UserDefaults.standard.string(forKey: "itemSort") ?? "") ?? .sizeDescending {
+        didSet { UserDefaults.standard.set(sort.rawValue, forKey: "itemSort") }
+    }
 }

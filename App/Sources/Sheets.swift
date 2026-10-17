@@ -72,6 +72,8 @@ struct ConfirmSheet: View {
                         Text("Çöp Kutusu'na gidenler boşaltana kadar geri alınabilir.").foregroundStyle(Theme.fg2)
                     }
                 }
+                Text(ItemExplainer.summary(plan.trashGroups.flatMap(\.items) + plan.commandItems))
+                    .font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 if !plan.nonGreen.isEmpty {
                     Text("**\(plan.nonGreen.count) öğe yeşil değil:** \(plan.nonGreen.map(\.name).joined(separator: ", ")). Bunları sen seçtin; yeniden indirme ya da veri kaybı olabilir.")
                         .font(.system(size: 12)).foregroundStyle(Theme.fg2)
@@ -100,16 +102,18 @@ struct ConfirmSheet: View {
                 Scroller {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(plan.trashGroups.enumerated()), id: \.offset) { _, g in
-                            header("\(CategoryInfo.info(for: g.category).title) · \(Fmt.bytes(Summaries.totalBytes(g.items)))")
+                            header("\(CategoryInfo.info(for: g.category).title) · \(Fmt.bytes(Summaries.totalBytes(g.items)))",
+                                   sub: ItemExplainer.categoryIntro(g.category))
                             ForEach(g.items) { line($0) }
                         }
                         if !plan.commandItems.isEmpty {
-                            header("Komutla temizlenecek · Çöp Kutusu'na gitmez · \(Fmt.bytes(plan.commandBytes))")
+                            header("Komutla temizlenecek · Çöp Kutusu'na gitmez · \(Fmt.bytes(plan.commandBytes))",
+                                   sub: "Bunlar kalıcı silinir; Çöp Kutusu'ndan geri alamazsın.")
                             ForEach(plan.commandItems) { line($0) }
                         }
                     }
                 }
-                .frame(maxHeight: 300)
+                .frame(maxHeight: 340)
                 .clipped()
                 .background(Theme.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
@@ -125,23 +129,33 @@ struct ConfirmSheet: View {
         .accessibilityLabel("Taşıma önizlemesi")
     }
 
-    private func header(_ text: String) -> some View {
-        Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fg2)
-            .padding(.horizontal, 10).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.hover)
+    private func header(_ text: String, sub: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(text).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.fg2)
+            Text(sub).font(.system(size: 11)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.hover)
     }
 
     private func line(_ item: CleanItem) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.name).font(.system(size: 12))
-                Text(Fmt.tilde(item.path)).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(Theme.fg2)
+        let e = ItemExplainer.explain(item)
+        return HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name).font(.system(size: 12.5, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(e.what).font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                Text("Silersem: \(e.consequence)").font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                ForEach(e.heads, id: \.self) { h in
+                    Text(h).font(.system(size: 11.5)).foregroundStyle(Theme.warn).fixedSize(horizontal: false, vertical: true)
+                }
+                RecoveryBadge(recovery: e.recovery).padding(.top, 2)
+                Text(Fmt.tilde(item.path)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.fg3)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 6)
             Text(Fmt.bytes(item.allocatedBytes)).font(.system(size: 12, weight: .bold)).monospacedDigit()
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
+        .padding(.horizontal, 10).padding(.vertical, 7)
         .overlay(alignment: .top) { Divider().opacity(0.5) }
     }
 }

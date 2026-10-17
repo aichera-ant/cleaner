@@ -87,6 +87,7 @@ struct OverviewView: View {
         let rc = Summaries.riskCounts(its)
         let green = its.filter { model.selection.effective($0).isDefaultSelected && model.selection.isSelectable($0) }
         let isApp = info.category == .apps
+        let held = Summaries.heldBackGreens(its, selection: model.selection).count
         return Button { ui.section = .category(info.category) } label: {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 9) {
@@ -97,8 +98,13 @@ struct OverviewView: View {
                     .font(.system(size: 22, weight: .bold, design: .rounded)).monospacedDigit()
                 Text(isApp ? "uzun süredir açılmamış" : "güvenle temizlenebilir")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.fg2).padding(.top, -6)
+                if held > 0 && !isApp {
+                    Text("\(held) öğe yakın zamanda kullanılmış; seçmek sana kalmış")
+                        .font(.system(size: 11)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, -4)
+                }
                 HStack(spacing: 4) {
-                    if rc.green > 0 && !isApp { Pill(text: "\(rc.green)", color: Theme.ok) }
+                    if green.count > 0 && !isApp { Pill(text: "\(green.count)", color: Theme.ok) }
                     if rc.yellow > 0 { Pill(text: "\(rc.yellow)", color: Theme.warn) }
                     if rc.red > 0 { Pill(text: "\(rc.red)", color: Theme.bad) }
                     if rc.locked > 0 { Pill(text: "\(rc.locked)", color: Theme.mute) }

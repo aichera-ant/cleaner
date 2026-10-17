@@ -187,3 +187,23 @@ struct Scroller<Content: View>: View {
         }
     }
 }
+
+/// "Geri gelir mi" rozeti.
+struct RecoveryBadge: View {
+    let recovery: Recovery
+    var color: Color {
+        switch recovery {
+        case .regenerates, .redownloads: Theme.ok
+        case .trashRestorable: Theme.warn
+        case .permanent: Theme.bad
+        case .notRemovable: Theme.mute
+        }
+    }
+    var body: some View {
+        Text(recovery.label)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7).padding(.vertical, 1.5)
+            .background(color.opacity(0.13), in: Capsule())
+    }
+}

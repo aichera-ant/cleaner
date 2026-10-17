@@ -56,6 +56,15 @@ public enum Summaries {
             .reduce(0) { $0 &+ $1.allocatedBytes }
     }
 
+    /// Yeşil ve seçilebilir ama varsayılan seçimde olmayan öğeler (ör. son 30 günde kullanılan proje artıkları).
+    /// Özet kartı bunları "güvenle temizlenebilir" sayısından ayrı gösterir.
+    public static func heldBackGreens(_ items: [CleanItem], selection: SelectionState = SelectionState()) -> [CleanItem] {
+        items.filter {
+            let e = selection.effective($0)
+            return e.risk == .green && !e.isLocked && e.method != .none && selection.isSelectable($0) && !e.isDefaultSelected
+        }
+    }
+
     public struct RiskCounts: Sendable, Equatable {
         public var green = 0, yellow = 0, red = 0, locked = 0
     }

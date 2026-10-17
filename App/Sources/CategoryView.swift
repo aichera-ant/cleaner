@@ -9,7 +9,7 @@ struct CategoryView: View {
     let category: ItemCategory
 
     private var info: CategoryInfo { CategoryInfo.info(for: category) }
-    private var items: [CleanItem] { Summaries.items(in: category, model.items) }
+    private var items: [CleanItem] { ui.sort.sorted(model.items.filter { $0.category == category }) }
 
     var body: some View {
         Scroller {
@@ -18,7 +18,7 @@ struct CategoryView: View {
                     CategoryTile(tint: Theme.tint(category), symbol: info.symbol, size: 34)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(info.title).font(.system(size: 22, weight: .bold, design: .rounded))
-                        Text(info.blurb).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                        Text(ItemExplainer.categoryIntro(category)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: 560, alignment: .leading)
                     }
                 }
@@ -32,12 +32,33 @@ struct CategoryView: View {
         }
     }
 
+    @Environment(\.snapshotMode) private var snapshot
+
+    @ViewBuilder private var sortMenu: some View {
+        if snapshot {
+            Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down").foregroundStyle(Theme.accent)
+        } else { sortMenuLive }
+    }
+
+    private var sortMenuLive: some View {
+        Menu {
+            Picker("Sırala", selection: Binding(get: { ui.sort }, set: { ui.sort = $0 })) {
+                ForEach(ItemSort.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down")
+        }
+        .menuStyle(.borderlessButton).fixedSize().foregroundStyle(Theme.accent)
+    }
+
     @ViewBuilder private var listBody: some View {
         let its = items
         let nsel = its.filter { model.selection.isSelected($0) }.count
         HStack {
             Text("\(its.count) öğe · \(nsel) seçili").foregroundStyle(Theme.fg2)
             Spacer()
+            sortMenu
             if its.contains(where: { model.selection.effective($0).risk == .green && model.selection.isSelectable($0) }) {
                 Button(model.selection.allGreensSelected(in: its) ? "Yeşillerin seçimini kaldır" : "Tüm yeşilleri seç") {
                     model.selection.toggleGreens(in: its)
@@ -64,32 +85,49 @@ struct ItemRow: View {
     let item: CleanItem
     let selection: SelectionState
     var onToggle: () -> Void
+    @State private var open = false
 
     private var selectable: Bool { selection.isSelectable(item) }
     private var on: Bool { selection.isSelected(item) }
 
     var body: some View {
+        let e = ItemExplainer.explain(item)
         HStack(alignment: .top, spacing: 10) {
             CheckBox(on: on, enabled: selectable, lockHelp: item.lockReason, action: onToggle).padding(.top, 5)
             ItemIcon(item: item)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Text(Fmt.tilde(item.path)).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.fg2)
-                    .lineLimit(2).truncationMode(.middle)
-                notes
+                Text(e.what).font(.system(size: 12)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
+                if let lock = item.lockReason {
+                    Label(lock, systemImage: "lock.fill").font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
+                        .labelStyle(.titleAndIcon).fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(e.heads.filter { !$0.hasPrefix("Şu an kullanımda") }, id: \.self) { h in
+                    Text(h).font(.system(size: 11.5)).foregroundStyle(Theme.warn).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 8) {
-                    Pill(text: Fmt.riskLabel(item), color: Theme.riskColor(item))
+                    RecoveryBadge(recovery: e.recovery)
+                    if item.isLocked || item.risk == .red || item.risk == .info {
+                        Pill(text: Fmt.riskLabel(item), color: Theme.riskColor(item))
+                    }
                     if Fmt.needsAuthorization(item) {
                         Pill(text: "macOS parola ya da Touch ID isteyecek", color: Theme.warn)
                     }
                     DateText(signal: item.dateSignal)
                 }
                 .padding(.top, 2)
+                if open { details(e) }
+                Text(Fmt.tilde(item.path)).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.fg3)
+                    .lineLimit(2).truncationMode(.middle)
             }
             Spacer(minLength: 6)
             HStack(spacing: 8) {
                 Text(Fmt.bytes(item.allocatedBytes)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(item.isLocked ? Theme.fg2 : .primary)
+                Button { open.toggle() } label: {
+                    Image(systemName: open ? "info.circle.fill" : "info.circle").font(.system(size: 14)).foregroundStyle(Theme.fg3)
+                }
+                .buttonStyle(.plain).help("Silersem ne olur?").accessibilityLabel("Silersem ne olur?")
                 RevealButton(path: item.path)
             }
             .padding(.top, 2)
@@ -97,24 +135,24 @@ struct ItemRow: View {
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(on ? Theme.accent.opacity(0.10) : .clear)
         .contentShape(Rectangle())
+        .onTapGesture { open.toggle() }
         .accessibilityElement(children: .contain)
     }
 
-    @ViewBuilder private var notes: some View {
-        if let lock = item.lockReason {
-            Label(lock, systemImage: "lock.fill").font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
-                .labelStyle(.titleAndIcon).fixedSize(horizontal: false, vertical: true)
-        }
-        if let note = item.note, !note.isEmpty {
-            Text(note).font(.system(size: 11.5)).foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
-        }
-        if case .command(let cmd) = item.method {
-            Text("Komutla temizlenir, Çöp Kutusu'na gitmez: \(cmd)").font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
+    private func details(_ e: ItemExplanation) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("**Silersem ne olur?** \(e.consequence)").font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
                 .fixedSize(horizontal: false, vertical: true)
+            if case .command(let cmd) = item.method {
+                Text("Komutla temizlenir, Çöp Kutusu'na gitmez: \(cmd)").font(.system(size: 11)).foregroundStyle(Theme.fg2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let note = item.note, !note.isEmpty {
+                Text("Teknik not: \(note)").font(.system(size: 11)).foregroundStyle(Theme.fg3).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        if let rel = item.relatedPaths, !rel.isEmpty {
-            Text("\(rel.count) artık dosya birlikte taşınır").font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
-        }
+        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.hover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -174,7 +212,7 @@ struct DuplicatesBody: View {
         Banner(symbol: "doc.on.doc", tint: Theme.mute,
                text: Text("Yalnız içeriği birebir aynı dosyalar listelenir (boyut, ilk 1 MB, tam özet sırasıyla). Yeniden oluşan klasörlerdeki kopyalar kendi bölümlerinde temizlenir. Yalnız iCloud'da duran dosyalar okunmaz, çünkü okumak onları Mac'e indirir."))
         HStack {
-            Text("\(groups.count) grup · seçili kopyalar: ")
+            Text("\(groups.count) grup (toplam boyuta göre) · seçili kopyalar: ")
                 .foregroundStyle(Theme.fg2)
             + Text(Fmt.bytes(Summaries.totalBytes(selected))).fontWeight(.semibold)
             Spacer()
@@ -195,6 +233,8 @@ struct DuplicatesBody: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(first.name).font(.system(size: 13, weight: .bold))
                         Text("\(g.members.count) kopya · her biri \(Fmt.bytes(g.perCopyBytes)) · içerik birebir aynı")
+                            .font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
+                        Text("Bir kopya kalır, silinenler kendiliğinden geri gelmez (Çöp Kutusu'ndan alınabilir).")
                             .font(.system(size: 11.5)).foregroundStyle(Theme.fg2)
                     }
                     Spacer()
