@@ -188,7 +188,7 @@ struct LeftoverScannerTests {
         #expect(items.filter { $0.name.hasPrefix("Code") }.count == 1)
     }
 
-    @Test("çalışan uygulamanın artıkları kilitli; yakında açılanınki de")
+    @Test("çalışan uygulamanın artıkları kilitli")
     func runningLocks() async throws {
         let t = try TempTree()
         let (apps, policy) = try AppFixture.setup(t)
