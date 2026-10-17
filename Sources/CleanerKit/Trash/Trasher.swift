@@ -52,14 +52,25 @@ public struct TrashReport: Codable, Sendable {
 /// var olmayan yol. Varsayılan dry-run: hiçbir şey taşınmaz, yalnız rapor üretilir.
 ///
 /// Uygulama istisnası (`apps` kategorisi): `PathPolicy.appBundleRejectionReason` + Apple (`com.apple.*`) değil
-/// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile). Artıklar (`relatedPaths`) paketten
-/// SONRA taşınır; paket taşınamazsa artıklara dokunulmaz.
+/// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile).
+///
+/// Uygulama artıkları ayrı öğedir (`parentAppID`, `leftoverMatch`); `relatedPaths` dolu öğe reddedilir. Artık,
+/// uygulaması seçilmeden de taşınabilir. Taşıma anında yeniden doğrulanır: kesin artık
+/// `PathPolicy.leftoverRejectionReason`, ad tabanlı `PathPolicy.nameLeftoverRejectionReason` (doğrudan çocuk,
+/// bağlantı değil, izinli kökte) + başka kurulu uygulamayla çakışma yok; ikisinde de uygulama öğesi aynı taramada
+/// olmalı, paketi hâlâ duruyorsa bundle id'si aynı olmalı, uygulama çalışmıyor ve Cleaner değil, aynı bundle id'li
+/// başka kopya kurulu değil. Uygulama öğesi bu çalıştırmada seçilip taşınamadıysa (ret ya da hata, ör. parola
+/// iptali) bağlı artıkları "uygulama taşınamadığı için atlandı" diye reddedilir. Artıklar uygulamalardan sonra işlenir.
 ///
 /// Yetkili taşıma (`privilegedRecycler`, gerçekte `FinderRecycler`: Finder parola/Touch ID ister): YALNIZ
 /// taze taramada `needsAuthorization == true` olan `apps` öğesinin `.app` paketi için, dar istisna taşıma anında
 /// yeniden doğrulanınca (yazma sorunu yalnız yetkiyle aşılabilen türdense) kullanılır. Başka hiçbir yol (artıklar
-/// dahil) yetkili taşıyıcıya verilmez; artıklar normal taşıyıcıyla, mevcut kurallarla taşınır. Yetkili taşıyıcı
-/// verilmemişse (CLI) bu öğeler reddedilir.
+/// dahil) yetkili taşıyıcıya verilmez; artık öğeleri HER ZAMAN normal taşıyıcıyla taşınır. Yetkili taşıyıcı
+/// verilmemişse (CLI) bu öğeler reddedilir. Bütün yetkili paketler doğrulamadan geçtikten sonra TEK toplu çağrıyla
+/// (`Recycling.recycle(_: [URL])`, tek parola) verilir; sonuç öğe başına raporlanır. Yazılabilir görünen bir uygulama
+/// paketi normal taşımada izin hatası (EPERM/EACCES, ör. Uygulama Yönetimi) alırsa ve yetkili taşıyıcı varsa, dar
+/// istisna yetkiye izinli yeniden doğrulanıp aynı toplu çağrıya eklenir; yoksa `appManagementRefusal`. Artıklar bu
+/// yedeğe ve toplu listeye asla girmez.
 public struct Trasher: Sendable {
     public let policy: PathPolicy
     public let commands: any CommandRunning
@@ -113,13 +124,12 @@ public struct Trasher: Sendable {
     /// Öğe yetkili taşıyıcıyla mı taşınacak? Yalnız taze taramada `needsAuthorization` olan uygulama öğesi ve
     /// yetkili taşıyıcı verilmişse.
     func usesPrivilegedRecycler(_ item: CleanItem) -> Bool {
-        item.category == .apps && item.needsAuthorization == true && privilegedRecycler != nil
+        item.category == .apps && !item.isLeftover && item.needsAuthorization == true && privilegedRecycler != nil
     }
 
-    static let authorizationRefusal = "Uygulama Yönetimi koruması: Cleaner uygulamasından kaldırın"
+    static let appFailedSkip = "uygulama taşınamadığı için atlandı"
 
-    /// Bir uygulama öğesinin en fazla kaç artığı olabilir (bozuk/elle değiştirilmiş öğeye karşı sınır).
-    static let maxRelatedPaths = 32
+    static let authorizationRefusal = "Uygulama Yönetimi koruması: Cleaner uygulamasından kaldırın"
 
     /// Öğe neden reddedilir? Reddedilmiyorsa nil.
     public func rejectionReason(for item: CleanItem) -> String? {
@@ -129,6 +139,11 @@ public struct Trasher: Sendable {
         // Öğe kimliği yoluyla tutarlı olmalı (elle değiştirilmiş öğe ile başka yol taşınmasın).
         if item.id != CleanItem.makeID(path: item.path) { return "id ile yol uyuşmuyor" }
         if let reason = groupFieldRejection(item) { return reason }
+        if item.relatedPaths != nil { return "ilişkili yollar desteklenmiyor (artıklar ayrı öğedir)" }
+        if item.isLeftover || item.appBundleID != nil || item.matchedName != nil {
+            guard item.category == .apps else { return "artık bilgisi yalnız uygulama öğesinde olabilir" }
+            if item.needsAuthorization == true { return "artık yetkili taşıyıcıyla taşınmaz" }
+        }
         if item.needsAuthorization == true {
             guard item.category == .apps else { return "yetki işareti yalnız uygulama öğesinde olabilir" }
             guard privilegedRecycler != nil else { return Trasher.authorizationRefusal }
@@ -138,7 +153,6 @@ public struct Trasher: Sendable {
         case .none:
             return "temizleme yöntemi yok"
         case .command:
-            if item.relatedPaths != nil { return "ilişkili yollar yalnız uygulama öğesinde olabilir" }
             if case .failure(let r) = CommandPolicy.validate(item, policy: policy) { return r.reason }
             return nil
         case .trash:
@@ -164,10 +178,69 @@ public struct Trasher: Sendable {
     func pathRejectionReason(for item: CleanItem) -> String? {
         if item.category == .apps {
             guard item.method == .trash else { return "uygulama yalnız Çöp Kutusu'na taşınır" }
-            return appRejectionReason(for: item)
+            return item.isLeftover ? leftoverPathRejection(item) : appRejectionReason(for: item)
         }
-        if item.relatedPaths != nil { return "ilişkili yollar yalnız uygulama öğesinde olabilir" }
+        if item.relatedPaths != nil { return "ilişkili yollar desteklenmiyor (artıklar ayrı öğedir)" }
         return policy.trashRejectionReason(for: item.url)
+    }
+
+    /// Artık öğesinin yol ve alan kontrolleri (uygulama öğesine bakmadan). Taşımadan hemen önce yeniden çağrılır.
+    func leftoverPathRejection(_ item: CleanItem) -> String? {
+        guard item.parentAppID != nil, let match = item.leftoverMatch else { return "artık bilgisi eksik" }
+        guard let bundleID = item.appBundleID, AppBundleInfo.isValidBundleID(bundleID) else { return "artık: geçersiz bundle id" }
+        if AppBundleInfo.isAppleBundleID(bundleID) { return "artık: Apple sistem uygulaması" }
+        if item.needsAuthorization == true { return "artık yetkili taşıyıcıyla taşınmaz" }
+        let why: String?
+        switch match {
+        case .bundleID:
+            guard item.matchedName == nil else { return "artık bilgisi tutarsız" }
+            why = policy.leftoverRejectionReason(for: item.url, bundleID: bundleID)
+        case .name:
+            guard let key = item.matchedName else { return "artık bilgisi eksik" }
+            why = policy.nameLeftoverRejectionReason(for: item.url, key: key)
+        }
+        if let why { return "artık: \(why)" }
+        return policy.trashRejectionReason(for: item.url).map { "artık: \($0)" }
+    }
+
+    /// Artığın uygulamaya göre kontrolü (taşıma anında): uygulama öğesi taramada, paket duruyorsa aynı bundle id,
+    /// çalışmıyor, Cleaner değil, aynı bundle id'li başka kopya yok, ad tabanlıda başka kurulu uygulamayla çakışma yok.
+    func leftoverParentRejection(_ item: CleanItem, parent: CleanItem?) -> String? {
+        guard let parent, parent.id == item.parentAppID, parent.category == .apps, !parent.isLeftover,
+              parent.path.lowercased().hasSuffix(".app"), let bundleID = item.appBundleID
+        else { return "artık: uygulama öğesi bu taramada yok" }
+        let reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
+        var st = stat()
+        let parentKey = InstalledApps.bundleKey(parent.url)
+        let running = RunningApps(processes: processes.runningProcesses(), reader: reader)
+        if lstat(parent.path, &st) == 0 {
+            guard let info = AppBundleInfo.read(parent.url, reader: reader),
+                  info.bundleID.lowercased() == bundleID.lowercased()
+            else { return "artık: uygulama değişti (bundle id uyuşmuyor)" }
+            if running.isRunning(bundle: parent.url, bundleID: bundleID) || processes.isRunning(info.name) {
+                return "artık: uygulama çalışıyor"
+            }
+            if isSelf(bundle: parent.url, bundleID: bundleID) { return "artık: Cleaner'ın kendisi" }
+        } else {
+            // Uygulama bu arada kaldırılmış: artık sahipsiz; yine de aynı kimlikle çalışan süreç olmamalı.
+            if running.isRunning(bundle: parent.url, bundleID: bundleID) || processes.isRunning(parent.name) {
+                return "artık: uygulama çalışıyor"
+            }
+            if let selfBundleID, selfBundleID.lowercased() == bundleID.lowercased() { return "artık: Cleaner'ın kendisi" }
+        }
+        let installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader)
+        if installed.hasOther(bundleID: bundleID, excludingBundleKey: parentKey) {
+            return "artık: aynı bundle id'li başka kopya kurulu; artıklar ortak"
+        }
+        if item.leftoverMatch == .name {
+            guard let rel = policy.nameLeftoverParent(for: item.url), let key = item.matchedName
+            else { return "artık: izinli klasörde değil" }
+            if let other = installed.conflict(entry: item.url.lastPathComponent, parent: rel, excludingBundleKey: parentKey,
+                                              ownerKey: key) {
+                return "artık: başka kurulu uygulamayla da eşleşiyor (\(other.bundleID))"
+            }
+        }
+        return nil
     }
 
     /// Tarama sonucuna göre ret: öğenin alt ağacında (ilişkili yollar dahil) kilitli ya da yalnız bilgi
@@ -192,6 +265,9 @@ public struct Trasher: Sendable {
             && item.preselect == scanned.preselect && item.needsAuthorization == scanned.needsAuthorization
             && item.ifNotKeptRisk == scanned.ifNotKeptRisk && item.ifNotKeptLockReason == scanned.ifNotKeptLockReason
             && item.ifNotKeptBytes == scanned.ifNotKeptBytes
+            && item.parentAppID == scanned.parentAppID && item.leftoverMatch == scanned.leftoverMatch
+            && item.appBundleID == scanned.appBundleID && item.matchedName == scanned.matchedName
+            && item.leftoverBytes == scanned.leftoverBytes
     }
 
     /// id -> tarama öğesi. Taramada birden çok kez geçen id belirsizdir (`ambiguous`), hiçbiri kullanılmaz.
@@ -210,9 +286,12 @@ public struct Trasher: Sendable {
     }
 
     /// Uygulama kontrolü; geçerse doğrulanmış bundle id'yi de döner (artıklar taşınırken yeniden kullanılır).
-    func appCheck(for item: CleanItem) -> (reason: String?, bundleID: String?) {
+    /// `allowingAuthorization`: nil ise öğenin taze tarama işaretine göre (`usesPrivilegedRecycler`); true yalnız
+    /// normal taşıma izin hatası verdikten sonra yetkili taşıyıcıya düşerken (yetkili taşıyıcı varken) verilir.
+    func appCheck(for item: CleanItem, allowingAuthorization: Bool? = nil) -> (reason: String?, bundleID: String?) {
         // Yetki yalnız taze taramada işaretli öğede ve yetkili taşıyıcı varken tolere edilir; diğer bütün koşullar aynı.
-        if let reason = policy.appBundleRejectionReason(for: item.url, allowingAuthorization: usesPrivilegedRecycler(item)) {
+        let allow = (allowingAuthorization ?? usesPrivilegedRecycler(item)) && privilegedRecycler != nil && !item.isLeftover
+        if let reason = policy.appBundleRejectionReason(for: item.url, allowingAuthorization: allow) {
             return (reason, nil)
         }
         let reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
@@ -229,18 +308,7 @@ public struct Trasher: Sendable {
         if running.isRunning(bundle: item.url, bundleID: info.bundleID) || processes.isRunning(info.name) {
             return "çalışıyor"
         }
-        let related = item.relatedPaths ?? []
-        if related.count > Trasher.maxRelatedPaths { return "çok fazla ilişkili yol" }
-        // Aynı bundle id'li başka kopya kuruluysa artıklar ortaktır; artıklı öğe taşınmaz.
-        if !related.isEmpty,
-           let other = AppsScanner.otherBundles(withID: info.bundleID, excluding: item.url, appRoots: policy.appRoots, reader: reader).first {
-            return "aynı bundle id'li başka kopya kurulu (\(other.path)); artıklar ortak"
-        }
-        for r in related {
-            if let why = policy.leftoverRejectionReason(for: URL(fileURLWithPath: r), bundleID: info.bundleID) {
-                return "artık reddedildi (\(r)): \(why)"
-            }
-        }
+        if item.relatedPaths != nil { return "ilişkili yollar desteklenmiyor (artıklar ayrı öğedir)" }
         return nil
     }
 
@@ -256,13 +324,7 @@ public struct Trasher: Sendable {
 
     /// Taşıma hatası için okunur neden.
     static func describe(_ error: any Error) -> String {
-        let ns = error as NSError
-        let permission = (ns.domain == NSCocoaErrorDomain && ns.code == NSFileWriteNoPermissionError)
-            || (ns.domain == NSPOSIXErrorDomain && (ns.code == Int(EPERM) || ns.code == Int(EACCES)))
-            || ((ns.userInfo[NSUnderlyingErrorKey] as? NSError).map {
-                $0.domain == NSPOSIXErrorDomain && ($0.code == Int(EPERM) || $0.code == Int(EACCES))
-            } ?? false)
-        return permission ? "izin yok (yönetici izni gerekir): \(error.localizedDescription)"
+        return isPermissionError(error) ? "izin yok (yönetici izni gerekir): \(error.localizedDescription)"
             : error.localizedDescription
     }
 
@@ -337,22 +399,41 @@ public struct Trasher: Sendable {
     private func run(_ selected: [CleanItem], scan: [CleanItem], dryRun: Bool, report initial: TrashReport) async -> TrashReport {
         var report = initial
         var accepted: [CleanItem] = []
+        // Bu çalıştırmada seçilip taşınamayan uygulama öğeleri: bağlı artıkları atlanır.
+        var failedApps = Set<String>()
+        func isApp(_ i: CleanItem) -> Bool { i.category == .apps && !i.isLeftover }
         for item in selected {
             if let reason = rejectionReason(for: item) ?? scanContextRejection(item, scanItems: scan) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                if isApp(item) { failedApps.insert(item.id) }
                 continue
             }
             accepted.append(item)
         }
         accepted = applyGroupRule(accepted, scanItems: scan, report: &report)
+        let (scanByID, _) = Trasher.index(scan)
 
-        // Üst öğeler önce: alt öğe, üst öğesi bu çalıştırmada taşındıysa atlanır.
+        // Üst öğeler önce: alt öğe, üst öğesi bu çalıştırmada taşındıysa atlanır. Uygulama artıkları en sonda
+        // (uygulama paketi, ana klasördeki gizli artıktan daha derinde olabilir).
         let ordered = accepted.enumerated().sorted { a, b in
+            let (la, lb) = (a.element.isLeftover, b.element.isLeftover)
+            if la != lb { return lb }
             let (da, db) = (Trasher.depth(a.element.path), Trasher.depth(b.element.path))
             return da != db ? da < db : a.offset < b.offset
         }.map(\.element)
         var coveredKeys: [(key: String, path: String)] = []
+        // Yetkili taşıyıcıya toplu verilecek uygulama paketleri (tek parola). Artıklardan önce taşınır.
+        var pendingPrivileged: [CleanItem] = []
+        var batchDone = false
         for item in ordered {
+            if item.isLeftover, !batchDone {
+                batchDone = true
+                await flushPrivileged(&pendingPrivileged, report: &report, failedApps: &failedApps, covered: &coveredKeys)
+            }
+            if item.isLeftover, let parentID = item.parentAppID, failedApps.contains(parentID) {
+                report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appFailedSkip))
+                continue
+            }
             let isVirtual = item.path.hasPrefix("/docker/")
             if !isVirtual {
                 let k = PathUtil.canonicalKey(item.path)
@@ -361,11 +442,77 @@ public struct Trasher: Sendable {
                     continue
                 }
             }
-            if await process(item, dryRun: dryRun, report: &report), !isVirtual {
-                coveredKeys += item.footprint.map { (PathUtil.canonicalKey($0), item.path) }
+            let parent = item.isLeftover ? item.parentAppID.flatMap { scanByID[$0] } : nil
+            switch await process(item, parent: parent, dryRun: dryRun, report: &report) {
+            case .done:
+                if !isVirtual { coveredKeys += item.footprint.map { (PathUtil.canonicalKey($0), item.path) } }
+            case .failed:
+                if isApp(item) { failedApps.insert(item.id) }
+            case .needsPrivileged:
+                pendingPrivileged.append(item)
             }
         }
+        if !batchDone {
+            await flushPrivileged(&pendingPrivileged, report: &report, failedApps: &failedApps, covered: &coveredKeys)
+        }
         return report
+    }
+
+    /// Bekleyen yetkili uygulama paketlerini TEK toplu çağrıyla yetkili taşıyıcıya verir; sonuç öğe başına.
+    /// Listeye yalnız artık olmayan `apps` `.app` paketi girer ve hemen önce dar istisna (yetkiye izinli)
+    /// yeniden denetlenir; geçemeyen reddedilir, listeye girmez.
+    private func flushPrivileged(_ pending: inout [CleanItem], report: inout TrashReport, failedApps: inout Set<String>,
+                                 covered: inout [(key: String, path: String)]) async {
+        defer { pending = [] }
+        guard !pending.isEmpty else { return }
+        var batch: [CleanItem] = []
+        for item in pending {
+            guard privilegedRecycler != nil, item.category == .apps, !item.isLeftover, item.method == .trash,
+                  item.relatedPaths == nil
+            else {
+                report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.authorizationRefusal))
+                failedApps.insert(item.id)
+                continue
+            }
+            if let reason = appCheck(for: item, allowingAuthorization: true).reason {
+                report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                failedApps.insert(item.id)
+                continue
+            }
+            batch.append(item)
+        }
+        guard let privileged = privilegedRecycler, !batch.isEmpty else { return }
+        // Sonuç, verilen URL nesnesiyle aranır (taşımadan sonra yeniden kurulan URL farklı olabilir).
+        let urls = batch.map(\.url)
+        let results = await privileged.recycle(urls)
+        for (item, url) in zip(batch, urls) {
+            switch results[url] {
+            case .success(let resulting):
+                report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+                covered.append((PathUtil.canonicalKey(item.path), item.path))
+            case .failure(let error):
+                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
+                failedApps.insert(item.id)
+            case nil:
+                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: yetkili taşıyıcı sonuç vermedi"))
+                failedApps.insert(item.id)
+            }
+        }
+    }
+
+    enum Outcome { case done, failed, needsPrivileged }
+
+    static let appManagementRefusal = "macOS Uygulama Yönetimi engelledi: Sistem Ayarları → Gizlilik ve Güvenlik → "
+        + "Uygulama Yönetimi'nde Cleaner'a izin ver ya da Cleaner uygulamasından kaldır"
+
+    /// İzin hatası mı (EPERM/EACCES, Cocoa yazma izni yok)?
+    static func isPermissionError(_ error: any Error) -> Bool {
+        let ns = error as NSError
+        return (ns.domain == NSCocoaErrorDomain && ns.code == NSFileWriteNoPermissionError)
+            || (ns.domain == NSPOSIXErrorDomain && (ns.code == Int(EPERM) || ns.code == Int(EACCES)))
+            || ((ns.userInfo[NSUnderlyingErrorKey] as? NSError).map {
+                $0.domain == NSPOSIXErrorDomain && ($0.code == Int(EPERM) || $0.code == Int(EACCES))
+            } ?? false)
     }
 
     static func depth(_ path: String) -> Int { path.split(separator: "/").count }
@@ -485,22 +632,23 @@ public struct Trasher: Sendable {
     }
 
     /// Tek öğeyi işler. Başarılıysa (dry-run'da kabul edildiyse) true.
-    private func process(_ item: CleanItem, dryRun: Bool, report: inout TrashReport) async -> Bool {
+    /// `parent`: artık öğesinin aynı taramadaki uygulama öğesi (artık değilse nil).
+    private func process(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, report: inout TrashReport) async -> Outcome {
         switch item.method {
         case .none:
-            return false // rejectionReason yakalar
+            return .failed // rejectionReason yakalar
         case .command(let cmd):
             // Taşımadan hemen önce yeniden doğrula; kurulan biçim çalışır, öğedeki metin değil.
             let exec: CommandPolicy.Exec
             switch CommandPolicy.validate(item, policy: policy) {
             case .failure(let r):
                 report.refused.append(.init(id: item.id, path: item.path, reason: r.reason))
-                return false
+                return .failed
             case .success(let e): exec = e
             }
             if dryRun {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
-                return true
+                return .done
             }
             let result: CommandResult? = switch exec {
             case .argv(let tool, let args): await commands.run(tool, args, timeout: commandTimeout)
@@ -508,79 +656,79 @@ public struct Trasher: Sendable {
             }
             guard let result else {
                 report.refused.append(.init(id: item.id, path: item.path, reason: "komut çalıştırılamadı: \(cmd)"))
-                return false
+                return .failed
             }
             if result.succeeded {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
-                return true
+                return .done
             }
             let why = result.timedOut ? "zaman aşımı" : "çıkış kodu \(result.exitCode)"
             report.refused.append(.init(id: item.id, path: item.path, reason: "komut başarısız (\(why)): \(cmd)"))
-            return false
+            return .failed
         case .trash:
+            if item.isLeftover {
+                return await processLeftover(item, parent: parent, dryRun: dryRun, report: &report) ? .done : .failed
+            }
             if dryRun {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: nil))
-                if item.category == .apps, let id = appCheck(for: item).bundleID {
-                    await appendLeftovers(item, bundleID: id, dryRun: true, to: &report)
-                }
-                return true
+                return .done
             }
             // Taşımadan hemen önce son kontrol (tarama ile taşıma arasında yol değişmiş olabilir).
-            var verifiedBundleID: String?
-            if item.category == .apps {
-                let check = appCheck(for: item)
-                if let reason = check.reason {
+            let isAppBundle = item.category == .apps
+            if isAppBundle {
+                if let reason = appCheck(for: item).reason {
                     report.refused.append(.init(id: item.id, path: item.path, reason: reason))
-                    return false
+                    return .failed
                 }
-                verifiedBundleID = check.bundleID
+                // Yetkili taşıyıcı yalnız doğrulanmış `needsAuthorization` uygulama paketi için; toplu çağrıya ertelenir.
+                if usesPrivilegedRecycler(item) { return .needsPrivileged }
             } else if let reason = pathRejectionReason(for: item) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
-                return false
-            }
-            // Yetkili taşıyıcı yalnız burada, yalnız doğrulanmış `needsAuthorization` uygulama paketi için.
-            var mover = recycler
-            if item.category == .apps, verifiedBundleID != nil, usesPrivilegedRecycler(item), let privileged = privilegedRecycler {
-                mover = privileged
+                return .failed
             }
             do {
-                let resulting = try await mover.recycle(item.url)
+                let resulting = try await recycler.recycle(item.url)
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+                return .done
             } catch {
-                // Paket taşınamadıysa artıklarına dokunulmaz.
+                // Uygulama paketi normal taşımada izin hatası aldı (ör. Uygulama Yönetimi): yetkili taşıyıcı varsa
+                // dar istisna yetkiye izinli yeniden doğrulanıp toplu çağrıya eklenir; yoksa açık ret nedeni.
+                if isAppBundle, Trasher.isPermissionError(error) {
+                    guard privilegedRecycler != nil else {
+                        report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appManagementRefusal))
+                        return .failed
+                    }
+                    if let reason = appCheck(for: item, allowingAuthorization: true).reason {
+                        report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                        return .failed
+                    }
+                    return .needsPrivileged
+                }
+                // Paket taşınamadıysa bağlı artıkları bu çalıştırmada atlanır (`run`).
                 report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
-                return false
+                return .failed
             }
-            if let verifiedBundleID {
-                await appendLeftovers(item, bundleID: verifiedBundleID, dryRun: false, to: &report)
-            }
-            return true
         }
     }
 
-    /// Uygulama artıkları: ana paketten sonra, her biri ayrı ayrı son kontrolle. Boyutları ana öğenin
-    /// boyutuna dahil olduğundan kendi satırları 0 bayttır. Bu arada silinmiş artık sessizce atlanır.
-    /// `bundleID`: paket taşınmadan hemen önce Info.plist'ten doğrulanan kimlik.
-    private func appendLeftovers(_ item: CleanItem, bundleID: String, dryRun: Bool, to report: inout TrashReport) async {
-        guard item.category == .apps, let related = item.relatedPaths else { return }
-        for r in related {
-            let url = URL(fileURLWithPath: r)
-            if let why = policy.leftoverRejectionReason(for: url, bundleID: bundleID) ?? policy.trashRejectionReason(for: url) {
-                if why == "yol yok" { continue }
-                report.refused.append(.init(id: item.id, path: r, reason: "artık: \(why)"))
-                continue
-            }
-            if dryRun {
-                report.done.append(.init(id: item.id, path: r, bytes: 0, action: .trashed, detail: "artık"))
-                continue
-            }
-            do {
-                // Artıklar her zaman normal taşıyıcıyla (yetkili taşıyıcı ana klasör yollarına verilmez).
-                let resulting = try await recycler.recycle(url)
-                report.done.append(.init(id: item.id, path: r, bytes: 0, action: .trashed, detail: resulting?.path))
-            } catch {
-                report.refused.append(.init(id: item.id, path: r, reason: "artık taşınamadı: \(Trasher.describe(error))"))
-            }
+    /// Artık öğesi: taşıma anında (dry-run'da da) yeniden doğrulanır; her zaman normal taşıyıcıyla taşınır.
+    private func processLeftover(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, report: inout TrashReport) async -> Bool {
+        if let reason = leftoverPathRejection(item) ?? leftoverParentRejection(item, parent: parent) {
+            report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+            return false
+        }
+        if dryRun {
+            report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: "artık"))
+            return true
+        }
+        do {
+            // Yetkili taşıyıcı artıklara ASLA verilmez.
+            let resulting = try await recycler.recycle(item.url)
+            report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+            return true
+        } catch {
+            report.refused.append(.init(id: item.id, path: item.path, reason: "artık taşınamadı: \(Trasher.describe(error))"))
+            return false
         }
     }
 }

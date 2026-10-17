@@ -109,6 +109,14 @@ extension CleanMethod: Codable {
     }
 }
 
+/// Uygulama artığının uygulamaya nasıl bağlandığı.
+public enum LeftoverMatch: String, Codable, Sendable, CaseIterable {
+    /// Bundle id ile tam eşleşme (kesin).
+    case bundleID
+    /// Uygulamanın adına benzeyen ad (aday; başka bir uygulamaya da ait olabilir).
+    case name
+}
+
 /// Temizlenebilir aday.
 public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     /// Yol tabanlı stabil kimlik (`CleanItem.makeID(path:)`).
@@ -125,8 +133,8 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     public var lockReason: String?
     public var note: String?
     public var method: CleanMethod
-    /// Öğeyle birlikte taşınan ek yollar (yalnız `apps`: bundle id ile tam eşleşen `~/Library` artıkları).
-    /// Diğer kategorilerde nil; `Trasher` başka kategoride dolu gelirse öğeyi reddeder.
+    /// Eski sürümlerde uygulama öğesiyle birlikte taşınan artık yolları. Artık hiçbir tarayıcı doldurmaz
+    /// (artıklar ayrı öğedir: `parentAppID`); yalnız JSON uyumu için durur. `Trasher` dolu gelen öğeyi reddeder.
     public var relatedPaths: [String]?
     /// `false`: risk yeşil olsa bile varsayılan seçimde değil (ör. 30 günden yeni proje artığı). nil/true: risk kuralı.
     public var preselect: Bool?
@@ -147,6 +155,20 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     /// Yalnız `duplicates` tutulacak kopyasında: kullanıcı başka kopyayı tutarsa bu kopyanın gerçek ayrılan boyutu.
     /// Tutulacak kopyanın kendi `allocatedBytes`'ı 0 kalır (toplamlarda çift sayım olmasın). nil: bilinmiyor.
     public var ifNotKeptBytes: UInt64?
+    /// Yalnız `apps` artık öğesinde: bağlı olduğu uygulama öğesinin id'si (aynı taramada).
+    public var parentAppID: String?
+    /// Yalnız `apps` artık öğesinde: eşleşme türü (`.bundleID` kesin, `.name` ad benzerliği).
+    public var leftoverMatch: LeftoverMatch?
+    /// Yalnız `apps` artık öğesinde: uygulamanın tarama anındaki bundle id'si (taşıma anı doğrulaması için).
+    public var appBundleID: String?
+    /// Yalnız `.name` artık öğesinde: eşleşen normalize ad (küçük harf, boşluk/tire/nokta/alt çizgi yok).
+    public var matchedName: String?
+    /// Yalnız `apps` uygulama öğesinde, salt bilgi: kesin (`.bundleID`) artık öğelerinin toplam ayrılan boyutu.
+    /// Uygulama öğesinin `allocatedBytes`'ına dahil değildir (artıklar kendi öğeleriyle sayılır).
+    public var leftoverBytes: UInt64?
+
+    /// Artık öğesi mi? (`parentAppID` ya da `leftoverMatch` dolu)
+    public var isLeftover: Bool { parentAppID != nil || leftoverMatch != nil }
 
     public init(
         category: Category,
@@ -162,7 +184,12 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         preselect: Bool? = nil,
         groupID: String? = nil,
         keeperPath: String? = nil,
-        needsAuthorization: Bool? = nil
+        needsAuthorization: Bool? = nil,
+        parentAppID: String? = nil,
+        leftoverMatch: LeftoverMatch? = nil,
+        appBundleID: String? = nil,
+        matchedName: String? = nil,
+        leftoverBytes: UInt64? = nil
     ) {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         self.id = CleanItem.makeID(path: standardized)
@@ -181,6 +208,11 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         self.groupID = groupID
         self.keeperPath = keeperPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
         self.needsAuthorization = needsAuthorization
+        self.parentAppID = parentAppID
+        self.leftoverMatch = leftoverMatch
+        self.appBundleID = appBundleID
+        self.matchedName = matchedName
+        self.leftoverBytes = leftoverBytes
     }
 
     public var url: URL { URL(fileURLWithPath: path) }

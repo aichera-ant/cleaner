@@ -352,12 +352,18 @@ struct TwinAppsTests {
             #expect(i.relatedPaths == nil)
             #expect(i.note?.contains("aynı bundle id'li başka kopya") == true)
         }
+        #expect(items.allSatisfy { !$0.isLeftover })
         let forged = AppFixture.appItem(a, related: [cache])
         let moved = Counter()
         let tr = Trasher(policy: policy, commands: FakeCommands(), processes: FakeProcesses(),
                          selfExecutable: nil, selfBundleID: nil, mover: try AppFixture.mover(t, counter: moved))
         let r = await tr.trash([forged], dryRun: false)
-        #expect(r.done.isEmpty && r.refused.first?.reason.contains("aynı bundle id") == true)
+        #expect(r.done.isEmpty && r.refused.first?.reason.contains("ilişkili yollar") == true)
+        // Ayrı artık öğesi olarak da (uydurma tarama): başka kopya kurulu olduğu için reddedilir.
+        let appItem = AppFixture.appItem(a)
+        let left = AppFixture.leftover(cache, app: appItem, bundleID: "com.example.foo")
+        let r2 = await tr.trash([left], dryRun: false, scanItems: [appItem, left])
+        #expect(r2.done.isEmpty && r2.refused.first?.reason.contains("aynı bundle id") == true, "\(r2)")
         #expect(moved.n == 0 && t.exists(a) && t.exists(b) && t.exists(cache))
     }
 }

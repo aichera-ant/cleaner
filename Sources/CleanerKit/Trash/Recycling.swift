@@ -5,6 +5,20 @@ import Foundation
 public protocol Recycling: Sendable {
     /// Yolu Çöp Kutusu'na taşır; Çöp Kutusu'ndaki yeni konumu döner (bilinmiyorsa nil).
     func recycle(_ url: URL) async throws -> URL?
+    /// Birden çok yolu tek seferde taşır (yetkili taşıyıcıda tek parola). Sonuç her verilen URL için
+    /// (verildiği haliyle anahtar) başarı (Çöp Kutusu'ndaki konum, bilinmiyorsa nil) ya da hata.
+    func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>]
+}
+
+extension Recycling {
+    /// Varsayılan: tek tek taşır.
+    public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
+        var out: [URL: Result<URL?, any Error>] = [:]
+        for u in urls {
+            do { out[u] = .success(try await recycle(u)) } catch { out[u] = .failure(error) }
+        }
+        return out
+    }
 }
 
 /// `FileManager.trashItem`: kullanıcı yetkisiyle taşır, yetki istemez. Varsayılan taşıyıcı.

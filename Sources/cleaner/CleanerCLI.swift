@@ -156,6 +156,7 @@ enum Output {
             let keeper = item.keeperPath.map { tilde($0, home: home) } ?? "?"
             out.append(item.isDuplicateKeeper ? "grup \(g) · tutulacak kopya bu" : "grup \(g) · tutulacak: " + oneLine(keeper))
         }
+        if let lb = item.leftoverBytes { out.append("kesin artıklar: \(bytes(lb)) (ayrı öğeler, aşağıda)") }
         if let note = item.note, !note.isEmpty { out.append("not: " + oneLine(note)) }
         return out
     }
@@ -164,13 +165,26 @@ enum Output {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         for (category, total) in report.totalsByCategory() {
             print("\n== \(category.rawValue)  \(bytes(total))")
-            for item in report.items where item.category == category {
+            let inCategory = report.items.filter { $0.category == category }
+            // Uygulama artıkları uygulamalarının altında (girintili); uygulaması listede olmayanlar sonda.
+            let parentIDs = Set(inCategory.filter { !$0.isLeftover }.map(\.id))
+            var children: [String: [CleanItem]] = [:]
+            for i in inCategory where i.isLeftover { children[i.parentAppID ?? "", default: []].append(i) }
+            func emit(_ item: CleanItem, indent: String) {
                 let sel = item.isDefaultSelected ? "*" : " "
                 let path = tilde(item.path, home: home)
-                var line = "\(sel) \(item.id)  \(lpad(bytes(item.allocatedBytes), 9))  \(pad(risk(item.risk), 8)) \(pad(date(item.dateSignal), 14)) \(pad(item.name, 32)) \(path)"
+                var line = "\(indent)\(sel) \(item.id)  \(lpad(bytes(item.allocatedBytes), 9))  \(pad(risk(item.risk), 8)) \(pad(date(item.dateSignal), 14)) \(pad(item.name, 32)) \(path)"
                 if case .command(let c) = item.method { line += "  [komut: \(c)]" }
+                if let m = item.leftoverMatch { line += m == .bundleID ? "  [artık: kesin]" : "  [artık: ad benzerliği]" }
                 print(line)
-                for detail in details(item, home: home) { print("      \(detail)") }
+                for detail in details(item, home: home) { print("\(indent)      \(detail)") }
+            }
+            for item in inCategory where !item.isLeftover {
+                emit(item, indent: "")
+                for c in children[item.id] ?? [] { emit(c, indent: "    └ ") }
+            }
+            for item in inCategory where item.isLeftover && !parentIDs.contains(item.parentAppID ?? "") {
+                emit(item, indent: "")
             }
         }
         let total = report.items.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }

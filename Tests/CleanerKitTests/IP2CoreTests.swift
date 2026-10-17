@@ -237,7 +237,8 @@ struct AuthorizationTests {
         p.writeProbe = probe(["Foo.app": rootOwned, "Bar.app": appManaged])
         let (normal, privileged) = (Counter(), Counter())
         let tr = try trasher(p, t, normal: normal, privileged: privileged)
-        let items = [authItem(foo, related: [caches, prefs]), authItem(bar)]
+        let fooItem = authItem(foo)
+        let items = [fooItem, authItem(bar)] + [caches, prefs].map { AppFixture.leftover($0, app: fooItem, bundleID: "com.example.foo") }
 
         let dry = await tr.trash(items)
         #expect(dry.refused.isEmpty && dry.done.count == 4, "\(dry)")
@@ -246,7 +247,7 @@ struct AuthorizationTests {
         let r = await tr.trash(items, dryRun: false)
         #expect(r.refused.isEmpty, "\(r.refused)")
         #expect(privileged.log.sorted() == [bar.path, foo.path].sorted())
-        #expect(normal.log == [caches.path, prefs.path])
+        #expect(Set(normal.log) == [caches.path, prefs.path])
         #expect(r.done.first { $0.path == foo.path }?.detail?.contains("PrivTrash") == true)
         for u in [foo, bar, caches, prefs] { #expect(!t.exists(u)) }
     }

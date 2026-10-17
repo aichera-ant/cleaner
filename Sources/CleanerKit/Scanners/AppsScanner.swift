@@ -5,9 +5,14 @@ import Foundation
 ///
 /// - Yalnız uygulama kökünün doğrudan çocuğu olan gerçek `.app` paketleri (alt klasör, bağlantı yok).
 /// - Apple (`com.apple.*`) uygulamaları listelenmez.
-/// - Artıklar: yalnız bundle id ile TAM eşleşen `~/Library` yolları (`PathPolicy.leftoverParents`, grup
-///   kapsayıcısında `group.<id>` / `<TAKIM>.<id>`). Adla tahmin edilenler alınmaz, yalnız notta "alınmadı" diye
-///   gösterilir. Öğenin boyutu paket + artıklardır; artıklar `relatedPaths` ile paketle birlikte taşınır.
+/// - Artıklar AYRI öğedir (`apps` kategorisi, `parentAppID` = uygulama öğesinin id'si); uygulama öğesi
+///   `relatedPaths` taşımaz, boyutu yalnız pakettir (`leftoverBytes`: kesin artıkların toplamı, salt bilgi).
+///   - Kesin (`.bundleID`): bundle id ile TAM eşleşen `~/Library` yolları (`PathPolicy.leftoverParents`, grup
+///     kapsayıcısında `group.<id>` / `<TAKIM>.<id>`). Yeşil, `preselect = false` (arayüz uygulama seçilince işaretler).
+///   - Ad tabanlı (`.name`): `LeftoverNames` kuralları (yalnız izinli klasörlerin doğrudan çocuğu, genel ad yok,
+///     başka kurulu uygulamanın adı ya da bundle id'siyle çakışan yok, sembolik bağlantı yok). Sarı, `preselect = false`.
+///   - Uygulama kilitliyse (çalışıyor, Cleaner, komut satırı, yakın kullanım, yazılamıyor) ya da yakında açıldıysa
+///     (bilgi) artıkları da kilitlidir. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
 /// - Risk: çalışan, Cleaner'ın kendisi, komut satırından kullanılan, son `staleDays` günde artığı değişen ve
 ///   yetkiyle de aşılamayan yazma sorunu olan (üst klasör salt okunur, başka kullanıcının paketi ...) paket kilitli;
 ///   son `staleDays` günde açılan bilgi; geri kalanı (hiç açılmamış ya da uzun süredir açılmamış) sarı
@@ -81,16 +86,63 @@ public struct AppsScanner: Cleaner {
         // Aynı bundle id'yi taşıyan birden çok kopya: artıklar ortaktır, hiçbirine eklenmez.
         var byID: [String: [URL]] = [:]
         for f in found { byID[f.info.bundleID.lowercased(), default: []].append(f.bundle) }
+        let installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader)
+        let listings = Self.nameListings(home: context.home)
         var items: [CleanItem] = []
         for f in found {
             try context.checkCancellation()
             let twins = (byID[f.info.bundleID.lowercased()] ?? []).filter { $0 != f.bundle }
-            if let item = try await makeItem(bundle: f.bundle, info: f.info, context: context, running: running,
-                                             cliLinks: cliLinks, sharedWith: twins) {
-                items.append(item)
-            }
+            items += try await makeItems(bundle: f.bundle, info: f.info, context: context, running: running,
+                                         cliLinks: cliLinks, sharedWith: twins, installed: installed, listings: listings)
         }
         return items
+    }
+
+    /// Ad tabanlı arama klasörlerinin girdileri (bir kez listelenir). Klasörün kendisi bağlantıysa boş.
+    static func nameListings(home: URL) -> [String: [String]] {
+        var out: [String: [String]] = [:]
+        for rel in LeftoverNames.parents {
+            let dir = rel.isEmpty ? home : home.appending(path: rel)
+            var st = stat()
+            guard lstat(dir.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
+                  let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
+            else { continue }
+            out[rel] = rel.isEmpty ? names.filter { $0.hasPrefix(".") }.sorted() : names.sorted()
+        }
+        return out
+    }
+
+    /// Bir uygulamanın en fazla kaç ad tabanlı artık adayı olabilir.
+    static let maxNameLeftovers = 32
+
+    /// Ad tabanlı artık adayları (kesin artıklar hariç). Her biri `PathPolicy.nameLeftoverRejectionReason` ve
+    /// `trashRejectionReason`'dan geçer; başka kurulu uygulamayla çakışan alınmaz.
+    static func nameLeftovers(info: AppBundleInfo, bundle: URL, exact: [URL], context: ScanContext,
+                              installed: InstalledApps, listings: [String: [String]]) -> [(url: URL, parent: String, key: String)] {
+        let keys = info.leftoverNameKeys.sorted()
+        guard !keys.isEmpty else { return [] }
+        let policy = context.pathPolicy
+        let bundleKey = InstalledApps.bundleKey(bundle)
+        let exactKeys = Set(exact.map { PathUtil.canonicalKey($0.path) })
+        var out: [(url: URL, parent: String, key: String)] = []
+        for rel in LeftoverNames.parents {
+            let dir = rel.isEmpty ? context.home : context.home.appending(path: rel)
+            for entry in listings[rel] ?? [] {
+                // Tam eşleşen ad önce (önek eşleşmesinden güçlü).
+                guard let key = keys.first(where: { LeftoverNames.matchesExactly(entry: entry, parent: rel, key: $0) })
+                    ?? keys.first(where: { LeftoverNames.matches(entry: entry, parent: rel, key: $0) })
+                else { continue }
+                let url = dir.appending(path: entry)
+                guard !exactKeys.contains(PathUtil.canonicalKey(url.path)),
+                      policy.nameLeftoverRejectionReason(for: url, key: key) == nil,
+                      policy.trashRejectionReason(for: url) == nil,
+                      installed.conflict(entry: entry, parent: rel, excludingBundleKey: bundleKey, ownerKey: key) == nil
+                else { continue }
+                out.append((url, rel, key))
+                if out.count >= maxNameLeftovers { return out }
+            }
+        }
+        return out
     }
 
     /// Uygulama köklerinde aynı bundle id'yi taşıyan başka `.app` paketleri (`excluding` hariç).
@@ -113,12 +165,19 @@ public struct AppsScanner: Cleaner {
         return out
     }
 
-    func makeItem(bundle: URL, info: AppBundleInfo, context: ScanContext, running: RunningApps,
-                  cliLinks: [(link: String, target: String)], sharedWith twins: [URL] = []) async throws -> CleanItem? {
+    func makeItems(bundle: URL, info: AppBundleInfo, context: ScanContext, running: RunningApps,
+                   cliLinks: [(link: String, target: String)], sharedWith twins: [URL] = [],
+                   installed: InstalledApps, listings: [String: [String]]) async throws -> [CleanItem] {
         let policy = context.pathPolicy
         let leftovers = twins.isEmpty ? Self.leftovers(bundleID: info.bundleID, context: context) : []
-        let sizes = try await context.sizeMeter.measure([bundle] + leftovers.map(\.url))
-        let total = sizes.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }
+        let named = twins.isEmpty
+            ? Self.nameLeftovers(info: info, bundle: bundle, exact: leftovers.map(\.url), context: context,
+                                 installed: installed, listings: listings)
+            : []
+        let sizes = try await context.sizeMeter.measure([bundle] + leftovers.map(\.url) + named.map(\.url))
+        let exactSizes = Array(sizes.dropFirst().prefix(leftovers.count))
+        let namedSizes = Array(sizes.dropFirst(1 + leftovers.count))
+        let exactBytes = exactSizes.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }
 
         // Son açılış: yalnız Spotlight. Yoksa "bilinmiyor" (paket tarihi kullanım değildir).
         let lastUsed = context.signals.spotlight.lastUsedDate(bundle)
@@ -126,7 +185,7 @@ public struct AppsScanner: Cleaner {
 
         // Kullanım izi: kullanıcı verisi artıklarının en yeni değişikliği.
         var activity: Date?
-        for (leftover, m) in zip(leftovers, sizes.dropFirst()) where Self.activityParents.contains(leftover.parent) {
+        for (leftover, m) in zip(leftovers, exactSizes) where Self.activityParents.contains(leftover.parent) {
             if let d = m.newestModification, d > (activity ?? .distantPast) { activity = d }
         }
         let activityDays = activity.map { DateSignal.days(from: $0, to: context.now) }
@@ -164,9 +223,8 @@ public struct AppsScanner: Cleaner {
         if needsAuthorization { notes.append("macOS parola ya da Touch ID isteyecek") }
         if risk == .info, let days = date.days { notes.append("son \(days) günde açıldı") }
         notes.append(info.bundleID + (info.version.map { " \($0)" } ?? ""))
-        if !leftovers.isEmpty {
-            let groups = Array(Set(leftovers.map { ($0.parent as NSString).lastPathComponent })).sorted()
-            notes.append("artıklar (\(leftovers.count)): \(groups.joined(separator: ", "))")
+        if !leftovers.isEmpty || !named.isEmpty {
+            notes.append("artıklar: \(leftovers.count) kesin, \(named.count) ad benzerliği")
         }
         if !twins.isEmpty {
             notes.append("aynı bundle id'li başka kopya kurulu (\(twins.map(\.path).joined(separator: ", "))); artıklar ortak olduğu için eklenmedi")
@@ -175,25 +233,55 @@ public struct AppsScanner: Cleaner {
         if !info.uninstallerHints.isEmpty {
             notes.append("kendi kaldırıcısı önerilir (\(info.uninstallerHints.joined(separator: ", ")))")
         }
-        let guesses = Self.nameGuesses(info: info, home: context.home)
-        if !guesses.isEmpty {
-            notes.append("adla eşleşen, alınmadı: " + guesses.joined(separator: ", "))
-        }
 
-        return CleanItem(
+        let appItem = CleanItem(
             category: .apps,
             name: info.name,
             path: bundle.path,
-            allocatedBytes: total,
+            allocatedBytes: sizes.first?.allocatedBytes ?? 0,
             risk: risk,
             dateSignal: date,
             lockReason: lock,
             note: notes.joined(separator: "; "),
             method: .trash,
-            relatedPaths: leftovers.map(\.url.path),
             preselect: needsAuthorization ? false : nil,
-            needsAuthorization: needsAuthorization ? true : nil
+            needsAuthorization: needsAuthorization ? true : nil,
+            leftoverBytes: leftovers.isEmpty ? nil : exactBytes
         )
+
+        // Artıklar uygulamanın durumunu izler: uygulama kilitliyse ya da yakında açıldıysa artıkları da kilitli.
+        let leftoverLock: String? = lock.map { "uygulama kilitli: \($0)" }
+            ?? (risk == .info ? "uygulama yakında açıldı (\(date.days.map { $0 == 0 ? "bugün" : "son \($0) gün" } ?? "yakın")); önce uygulamayı kaldırın" : nil)
+        func leftoverItem(_ url: URL, parent: String, m: SizeMeasurement, match: LeftoverMatch, key: String?) -> CleanItem {
+            let label = parent.isEmpty ? "~" : (parent as NSString).lastPathComponent
+            let note = match == .bundleID
+                ? "\(info.name) uygulamasının verisi (\(label); bundle id ile eşleşti)"
+                : "Adı benziyor; başka bir uygulamaya da ait olabilir (\(info.name), \(label))"
+            return CleanItem(
+                category: .apps,
+                name: "\(info.name): \(url.lastPathComponent)",
+                path: url.path,
+                allocatedBytes: m.allocatedBytes,
+                risk: match == .bundleID ? .green : .yellow,
+                dateSignal: m.newestModification.map { .modified(days: DateSignal.days(from: $0, to: context.now)) } ?? .unknown,
+                lockReason: leftoverLock,
+                note: note,
+                method: .trash,
+                preselect: false,
+                parentAppID: appItem.id,
+                leftoverMatch: match,
+                appBundleID: info.bundleID,
+                matchedName: key
+            )
+        }
+        var out = [appItem]
+        for (l, m) in zip(leftovers, exactSizes) {
+            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .bundleID, key: nil))
+        }
+        for (l, m) in zip(named, namedSizes) {
+            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .name, key: l.key))
+        }
+        return out
     }
 
     static func isSelf(bundle: URL, bundleID: String) -> Bool {
@@ -229,24 +317,6 @@ public struct AppsScanner: Cleaner {
             }
         }
         return result
-    }
-
-    /// Uygulamanın adıyla duran ama bundle id ile eşleşmeyen yerler (yalnız ipucu; taşınmaz).
-    static func nameGuesses(info: AppBundleInfo, home: URL) -> [String] {
-        let name = info.name
-        guard !name.isEmpty, !name.contains("/") else { return [] }
-        let compact = name.lowercased().replacingOccurrences(of: " ", with: "")
-        let candidates = [
-            "Library/Application Support/\(name)", "Library/Caches/\(name)",
-            ".\(compact)", ".\(name.lowercased().replacingOccurrences(of: " ", with: "-"))",
-        ]
-        var out: [String] = []
-        var seen = Set<String>()
-        for rel in candidates where seen.insert(rel.lowercased()).inserted {
-            var st = stat()
-            if lstat(home.appending(path: rel).path, &st) == 0 { out.append("~/" + rel) }
-        }
-        return out
     }
 
     /// Komut satırı klasörlerindeki sembolik bağlantılar ve çözülmüş hedefleri (yalnız `.app` içine gidenler).
