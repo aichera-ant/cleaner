@@ -48,7 +48,9 @@ struct CleanerApp: App {
     var body: some Scene {
         WindowGroup("Hepp Cleaner", id: "main") {
             RootView(model: model, ui: ui, perms: perms)
-                .safeAreaInset(edge: .top, spacing: 0) { LoginNoticeBar(login: login) }
+                // İlk açılış akışı oturum açılışını zaten anlatır; bant akış sırasında gizli, akış bitince kapanır.
+                .safeAreaInset(edge: .top, spacing: 0) { if ui.onboarding == nil { LoginNoticeBar(login: login) } }
+                .onChange(of: ui.onboarding == nil) { _, done in if done { login.dismissNotice() } }
                 .onAppear { if perms.shouldPresentOnLaunch { ui.sheet = .permissions } }
                 .frame(minWidth: 760, minHeight: 540)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

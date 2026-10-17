@@ -7,3 +7,4 @@ DerivedData/
 Package.resolved.bak
 build/
 *.xcodeproj
+.claude/worktrees/
