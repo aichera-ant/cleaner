@@ -34,8 +34,12 @@ public struct AppBundleInfo: Sendable, Equatable {
         Set([name, displayName, bundleName, executableName].compactMap { $0 }.map(LeftoverNames.normalize).filter { !$0.isEmpty })
     }
 
-    /// Ad tabanlı artık aramasında kullanılabilecek adlar: en az 4 karakter, genel kelime değil.
-    public var leftoverNameKeys: Set<String> { allNameKeys.filter(LeftoverNames.isUsableKey) }
+    /// Ad tabanlı artık aramasında kullanılabilecek adlar (paket adı, görünen ad, `CFBundleName`): en az 4 karakter,
+    /// genel kelime değil. Çalıştırılabilir ad (`CFBundleExecutable`) aramada KULLANILMAZ (ör. Warp → "stable");
+    /// yalnız çakışma denetimine (`allNameKeys`) girer.
+    public var leftoverNameKeys: Set<String> {
+        Set([name, displayName, bundleName].compactMap { $0 }.map(LeftoverNames.normalize).filter(LeftoverNames.isUsableKey))
+    }
 
     /// Apple sistem uygulaması mı? (`com.apple.*`)
     public var isApple: Bool { AppBundleInfo.isAppleBundleID(bundleID) }

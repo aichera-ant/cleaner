@@ -11,6 +11,18 @@ final class FakeProbe: PermissionProbe, @unchecked Sendable {
     func automation(askUser: Bool) -> ProbeResult { askUser ? (askedAuto ?? auto) : auto }
 }
 
+/// Sorgunun hangi iş parçacığında çağrıldığını sayar.
+final class ThreadProbe: PermissionProbe, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _calls = 0, _onMain = 0
+    var calls: Int { lock.withLock { _calls } }
+    var onMain: Int { lock.withLock { _onMain } }
+    func reset() { lock.withLock { _calls = 0; _onMain = 0 } }
+    private func note() { lock.withLock { _calls += 1; if Thread.isMainThread { _onMain += 1 } } }
+    func fullDiskAccess() -> ProbeResult { note(); return .granted }
+    func automation(askUser: Bool) -> ProbeResult { note(); return .granted }
+}
+
 @MainActor
 @Suite struct PermissionTests {
     func defaults() -> UserDefaults {
@@ -52,13 +64,23 @@ final class FakeProbe: PermissionProbe, @unchecked Sendable {
         #expect(!PermissionModel(probe: FakeProbe(fda: .unknown, auto: .notDetermined), defaults: d).shouldPresentOnLaunch)
     }
 
-    @Test func refreshPicksUpChange() {
+    @Test func refreshPicksUpChange() async {
         let probe = FakeProbe(fda: .denied, auto: .notDetermined)
         let m = PermissionModel(probe: probe, defaults: defaults())
         #expect(m.status(.fullDiskAccess) == .required)
         probe.fda = .granted
-        m.refresh()
+        await m.refresh()
         #expect(m.status(.fullDiskAccess) == .granted)
+    }
+
+    @Test("yenileme sorguları ana iş parçacığında değil; sonuç MainActor'da uygulanır")
+    func refreshProbesOffMain() async {
+        let probe = ThreadProbe()
+        let m = PermissionModel(probe: probe, defaults: defaults())
+        probe.reset()
+        await m.refresh()
+        #expect(probe.calls == 2 && probe.onMain == 0)
+        #expect(m.status(.fullDiskAccess) == .granted && m.status(.automation) == .granted)
     }
 
     @Test func requestAutomationUpdates() async {

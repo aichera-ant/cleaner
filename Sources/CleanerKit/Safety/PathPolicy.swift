@@ -22,6 +22,11 @@ public struct PathPolicy: Sendable {
     /// Çakışma denetiminde (ad tabanlı artık) ayrıca bakılan, taşınmayan uygulama kökleri. Varsayılan
     /// `/System/Applications`; uygulama kökleri dışarıdan verilmişse (test) boş.
     public let conflictOnlyAppRoots: [URL]
+    /// Ad tabanlı artık çakışmasında çalıştırılabilir adlarına bakılan komut satırı klasörleri
+    /// (`InstalledApps.commandNames`). Varsayılan: PATH + yaygın sistem/Homebrew klasörleri + ana klasördeki
+    /// bilinen araç klasörleri (`.local/bin`, npm, bun, cargo, nvm/fnm ...). Uygulama kökleri dışarıdan verilmişse
+    /// (test) yalnız ana klasördekiler.
+    public let commandDirectories: [URL]
     /// Uygulama köklerinin yazıldığı (standart, çözülmemiş) yollarının anahtarları.
     private let appRootLiteralKeys: [String]
     /// Uygulama köklerinin çözülmüş yollarının anahtarları (`appRootLiteralKeys` ile aynı sırada).
@@ -59,7 +64,7 @@ public struct PathPolicy: Sendable {
         ".gnupg",
     ]
 
-    public init(home: URL, appRoots: [URL]? = nil) {
+    public init(home: URL, appRoots: [URL]? = nil, commandDirectories: [URL]? = nil) {
         self.home = home
         let homeKey = PathUtil.key(PathUtil.canonicalDirectory(home))
         self.homeKey = homeKey
@@ -68,8 +73,43 @@ public struct PathPolicy: Sendable {
         let roots = appRoots ?? PathPolicy.defaultAppRoots(home: home)
         self.appRoots = roots
         self.conflictOnlyAppRoots = appRoots == nil ? [URL(fileURLWithPath: "/System/Applications", isDirectory: true)] : []
+        self.commandDirectories = commandDirectories
+            ?? PathPolicy.defaultCommandDirectories(home: home, includeSystem: appRoots == nil)
         self.appRootLiteralKeys = roots.map { PathUtil.key($0.standardizedFileURL.path) }
         self.appRootKeys = roots.map { PathUtil.key(PathUtil.canonicalDirectory($0)) }
+    }
+
+    /// Ana klasöre göreli bilinen komut satırı klasörleri.
+    static let homeCommandDirectories = [
+        ".local/bin", "bin", ".npm-global/bin", ".bun/bin", ".cargo/bin", ".deno/bin", "go/bin", ".volta/bin",
+        ".yarn/bin", "Library/pnpm", ".fnm/aliases/default/bin", ".local/share/fnm/aliases/default/bin",
+        "Library/Application Support/fnm/aliases/default/bin", ".pyenv/shims", ".rbenv/shims", ".rd/bin",
+        ".docker/bin", ".lmstudio/bin", ".opencode/bin", ".claude/local",
+    ]
+    /// Ana klasöre göreli, sürüm başına `bin` içeren klasörler (`<kök>/<sürüm>/<son ek>`).
+    static let homeVersionedCommandDirectories = [
+        (".nvm/versions/node", "bin"), (".local/share/fnm/node-versions", "installation/bin"),
+        ("Library/Application Support/fnm/node-versions", "installation/bin"), (".fnm/node-versions", "installation/bin"),
+    ]
+
+    /// Varsayılan komut satırı klasörleri. `includeSystem`: PATH ve sistem/Homebrew klasörleri de.
+    public static func defaultCommandDirectories(home: URL, includeSystem: Bool) -> [URL] {
+        var out: [URL] = homeCommandDirectories.map { home.appending(path: $0) }
+        let fm = FileManager.default
+        for (root, suffix) in homeVersionedCommandDirectories {
+            let r = home.appending(path: root)
+            for v in ((try? fm.contentsOfDirectory(atPath: r.path)) ?? []).sorted().prefix(64) where !v.hasPrefix(".") {
+                out.append(r.appending(path: v).appending(path: suffix))
+            }
+        }
+        if includeSystem {
+            out += ["/usr/local/bin", "/usr/local/sbin", "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/bin", "/bin",
+                    "/usr/sbin", "/sbin", "/opt/local/bin"].map { URL(fileURLWithPath: $0) }
+            let path = ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":").map(String.init) ?? []
+            out += path.filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0) }
+        }
+        var seen = Set<String>()
+        return out.filter { seen.insert(PathUtil.key($0.standardizedFileURL.path)).inserted }
     }
 
     public static func defaultAppRoots(home: URL) -> [URL] {
@@ -301,7 +341,9 @@ public struct PathPolicy: Sendable {
 
     /// Ad tabanlı artık (`LeftoverNames`) Çöp Kutusu'na taşınamıyorsa nedenini döner. Yol, izinli klasörlerden
     /// birinin (yazıldığı ve çözülmüş haliyle) DOĞRUDAN çocuğu olmalı, kendisi sembolik bağlantı olmamalı, adı
-    /// `key` ile eşleşmeli (`LeftoverNames.matches`) ve `key` kullanılabilir (genel değil) olmalı. Containers,
+    /// `key` ile eşleşmeli (`LeftoverNames.matches`; `.<ad>-*` öneki yalnız klasörde), sabit ret listesinde ya da
+    /// adında kimlik bilgisi sözcüğü olmamalı (`LeftoverNames.deniedReason`) ve `key` kullanılabilir (genel değil)
+    /// olmalı. Containers,
     /// Group Containers, iCloud ve başka hiçbir yer kabul edilmez. Çakışan kurulu uygulama ve çalışan uygulama
     /// denetimi çağıranda (`AppsScanner`, `Trasher`).
     /// Yolun (yazıldığı haliyle) üst klasörü ad tabanlı arama klasörlerinden biriyse onun göreli adı
@@ -328,8 +370,12 @@ public struct PathPolicy: Sendable {
         guard lstat(path, &st) == 0 else { return "yol yok" }
         if (st.st_mode & S_IFMT) == S_IFLNK { return "sembolik bağlantı" }
         // Yalnız klasör ya da sıradan dosya (soket, FIFO, aygıt dosyası değil).
-        guard (st.st_mode & S_IFMT) == S_IFDIR || (st.st_mode & S_IFMT) == S_IFREG else { return "klasör ya da dosya değil" }
-        guard LeftoverNames.matches(entry: name, parent: rel, key: key) else { return "artık adı uygulama adıyla eşleşmiyor" }
+        let isDir = (st.st_mode & S_IFMT) == S_IFDIR
+        guard isDir || (st.st_mode & S_IFMT) == S_IFREG else { return "klasör ya da dosya değil" }
+        if let reason = LeftoverNames.deniedReason(entry: name, parent: rel) { return reason }
+        // `.<ad>-*` önek eşleşmesi yalnız klasörde; dosyada yalnız tam ad.
+        guard LeftoverNames.matches(entry: name, parent: rel, key: key, isDirectory: isDir)
+        else { return "artık adı uygulama adıyla eşleşmiyor" }
         if let reason = protectionReason(for: url) { return reason }
         guard isInsideHome(url) else { return "ana klasör dışı" }
         return nil

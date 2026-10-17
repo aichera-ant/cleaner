@@ -15,6 +15,21 @@ import Testing
         return (model, scan, trash)
     }
 
+    @Test("açıklama önbelleği: aynı id ama alanları farklı (etkin) öğe önbellekten dönmez")
+    func explanationCacheKeyedByItem() {
+        let m = AppModel(scanService: FakeScan(ScanSnapshot(items: [], scannedAt: t0)), trashService: FakeTrash(),
+                         now: { self.t0 }, diskProvider: { nil })
+        let raw = item("x")
+        var changed = raw
+        changed.method = .command("true")
+        changed.risk = .red
+        let a = m.explanation(for: raw)
+        let b = m.explanation(for: changed)
+        #expect(a == ItemExplainer.explain(raw) && b == ItemExplainer.explain(changed))
+        #expect(a.recovery != b.recovery)
+        #expect(m.explanation(for: raw) == a)
+    }
+
     @Test func refreshDiskReadsProviderAgain() {
         final class Box: @unchecked Sendable { var avail: UInt64 = 400 }
         let box = Box()

@@ -205,41 +205,64 @@ public struct Trasher: Sendable {
         return policy.trashRejectionReason(for: item.url).map { "artık: \($0)" }
     }
 
+    /// Artık doğrulaması için çalıştırma başına bir kez okunan bilgiler: kurulu uygulamalar (komut satırı
+    /// çalıştırılabilir adları dahil) ve süreç listesi. Uygulama paketleri taşındıktan sonra, ilk artıktan hemen
+    /// önce kurulur.
+    struct LeftoverEnvironment {
+        let reader: SafeReader
+        let installed: InstalledApps
+        let processes: [RunningProcess]
+        let running: RunningApps
+
+        init(policy: PathPolicy, processes lister: any ProcessListing) {
+            reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
+            installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader,
+                                      commandDirectories: policy.commandDirectories)
+            processes = lister.runningProcesses()
+            running = RunningApps(processes: processes, reader: reader)
+        }
+
+        /// `ProcessListing.isRunning(_:)` ile aynı kural, anlık görüntü üzerinde.
+        func isRunning(name: String) -> Bool {
+            let appMarker = "/\(name).app/Contents/"
+            return processes.contains { $0.name == name || ($0.path?.contains(appMarker) ?? false) }
+        }
+    }
+
     /// Artığın uygulamaya göre kontrolü (taşıma anında): uygulama öğesi taramada, paket duruyorsa aynı bundle id,
-    /// çalışmıyor, Cleaner değil, aynı bundle id'li başka kopya yok, ad tabanlıda başka kurulu uygulamayla çakışma yok.
-    func leftoverParentRejection(_ item: CleanItem, parent: CleanItem?) -> String? {
+    /// çalışmıyor, Cleaner değil, aynı bundle id'li başka kopya yok, ad tabanlıda başka kurulu uygulamayla ya da
+    /// (ana klasörde) komut satırı aracıyla çakışma yok. `env` nil ise yeniden okunur.
+    func leftoverParentRejection(_ item: CleanItem, parent: CleanItem?, env: LeftoverEnvironment? = nil) -> String? {
         guard let parent, parent.id == item.parentAppID, parent.category == .apps, !parent.isLeftover,
               parent.path.lowercased().hasSuffix(".app"), let bundleID = item.appBundleID
         else { return "artık: uygulama öğesi bu taramada yok" }
-        let reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
+        let env = env ?? LeftoverEnvironment(policy: policy, processes: processes)
         var st = stat()
         let parentKey = InstalledApps.bundleKey(parent.url)
-        let running = RunningApps(processes: processes.runningProcesses(), reader: reader)
         if lstat(parent.path, &st) == 0 {
-            guard let info = AppBundleInfo.read(parent.url, reader: reader),
+            guard let info = AppBundleInfo.read(parent.url, reader: env.reader),
                   info.bundleID.lowercased() == bundleID.lowercased()
             else { return "artık: uygulama değişti (bundle id uyuşmuyor)" }
-            if running.isRunning(bundle: parent.url, bundleID: bundleID) || processes.isRunning(info.name) {
+            if env.running.isRunning(bundle: parent.url, bundleID: bundleID) || env.isRunning(name: info.name) {
                 return "artık: uygulama çalışıyor"
             }
             if isSelf(bundle: parent.url, bundleID: bundleID) { return "artık: Cleaner'ın kendisi" }
         } else {
             // Uygulama bu arada kaldırılmış: artık sahipsiz; yine de aynı kimlikle çalışan süreç olmamalı.
-            if running.isRunning(bundle: parent.url, bundleID: bundleID) || processes.isRunning(parent.name) {
+            if env.running.isRunning(bundle: parent.url, bundleID: bundleID) || env.isRunning(name: parent.name) {
                 return "artık: uygulama çalışıyor"
             }
             if let selfBundleID, selfBundleID.lowercased() == bundleID.lowercased() { return "artık: Cleaner'ın kendisi" }
         }
-        let installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader)
-        if installed.hasOther(bundleID: bundleID, excludingBundleKey: parentKey) {
+        if env.installed.hasOther(bundleID: bundleID, excludingBundleKey: parentKey) {
             return "artık: aynı bundle id'li başka kopya kurulu; artıklar ortak"
         }
         if item.leftoverMatch == .name {
             guard let rel = policy.nameLeftoverParent(for: item.url), let key = item.matchedName
             else { return "artık: izinli klasörde değil" }
-            if let other = installed.conflict(entry: item.url.lastPathComponent, parent: rel, excludingBundleKey: parentKey,
-                                              ownerKey: key) {
-                return "artık: başka kurulu uygulamayla da eşleşiyor (\(other.bundleID))"
+            if let other = env.installed.conflict(entry: item.url.lastPathComponent, parent: rel,
+                                                  excludingBundleKey: parentKey, ownerKey: key) {
+                return "artık: başka kurulu uygulamayla da eşleşiyor (\(other))"
             }
         }
         return nil
@@ -427,10 +450,13 @@ public struct Trasher: Sendable {
         // Yetkili taşıyıcıya toplu verilecek uygulama paketleri (tek parola). Artıklardan önce taşınır.
         var pendingPrivileged: [CleanItem] = []
         var batchDone = false
+        // Artık doğrulaması için kurulu uygulamalar ve süreç listesi: çalıştırma başına bir kez (paketlerden sonra).
+        var leftoverEnv: LeftoverEnvironment?
         for item in ordered {
             if item.isLeftover, !batchDone {
                 batchDone = true
                 await flushPrivileged(&pendingPrivileged, report: &report, failedApps: &failedApps, covered: &coveredKeys)
+                leftoverEnv = LeftoverEnvironment(policy: policy, processes: processes)
             }
             if item.isLeftover, let parentID = item.parentAppID, failedApps.contains(parentID) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appFailedSkip))
@@ -445,7 +471,7 @@ public struct Trasher: Sendable {
                 }
             }
             let parent = item.isLeftover ? item.parentAppID.flatMap { scanByID[$0] } : nil
-            switch await process(item, parent: parent, dryRun: dryRun, report: &report) {
+            switch await process(item, parent: parent, dryRun: dryRun, env: leftoverEnv, report: &report) {
             case .done:
                 if !isVirtual { coveredKeys += item.footprint.map { (PathUtil.canonicalKey($0), item.path) } }
             case .failed:
@@ -635,7 +661,8 @@ public struct Trasher: Sendable {
 
     /// Tek öğeyi işler. Başarılıysa (dry-run'da kabul edildiyse) true.
     /// `parent`: artık öğesinin aynı taramadaki uygulama öğesi (artık değilse nil).
-    private func process(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, report: inout TrashReport) async -> Outcome {
+    private func process(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, env: LeftoverEnvironment? = nil,
+                         report: inout TrashReport) async -> Outcome {
         switch item.method {
         case .none:
             return .failed // rejectionReason yakalar
@@ -669,7 +696,7 @@ public struct Trasher: Sendable {
             return .failed
         case .trash:
             if item.isLeftover {
-                return await processLeftover(item, parent: parent, dryRun: dryRun, report: &report) ? .done : .failed
+                return await processLeftover(item, parent: parent, dryRun: dryRun, env: env, report: &report) ? .done : .failed
             }
             if dryRun {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: nil))
@@ -714,8 +741,9 @@ public struct Trasher: Sendable {
     }
 
     /// Artık öğesi: taşıma anında (dry-run'da da) yeniden doğrulanır; her zaman normal taşıyıcıyla taşınır.
-    private func processLeftover(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, report: inout TrashReport) async -> Bool {
-        if let reason = leftoverPathRejection(item) ?? leftoverParentRejection(item, parent: parent) {
+    private func processLeftover(_ item: CleanItem, parent: CleanItem?, dryRun: Bool, env: LeftoverEnvironment?,
+                                 report: inout TrashReport) async -> Bool {
+        if let reason = leftoverPathRejection(item) ?? leftoverParentRejection(item, parent: parent, env: env) {
             report.refused.append(.init(id: item.id, path: item.path, reason: reason))
             return false
         }

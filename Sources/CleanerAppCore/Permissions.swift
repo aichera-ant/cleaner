@@ -97,7 +97,8 @@ public final class PermissionModel {
         self.probe = probe
         self.defaults = defaults
         self.appManagementMarked = defaults.bool(forKey: Self.appManagementKey)
-        refresh()
+        // Açılışta bir kez eşzamanlı (açılış ekranı kararı bu değerlere bakar). Sonraki yenilemeler arka planda.
+        apply(Self.probeAll(probe))
     }
 
     // MARK: Durum eşlemesi
@@ -139,14 +140,32 @@ public final class PermissionModel {
 
     // MARK: Yenileme
 
-    /// Hızlı, kullanıcıya sormaz. Uygulama öne gelince çağrılır.
-    public func refresh() {
-        fullDisk = probe.fullDiskAccess()
-        automation = probe.automation(askUser: false)
+    /// Son başlatılan sorgunun sırası: geç dönen eski sorgu yenisinin sonucunu ezmez.
+    @ObservationIgnored private var generation = 0
+
+    nonisolated private static func probeAll(_ probe: any PermissionProbe) -> (ProbeResult, ProbeResult) {
+        (probe.fullDiskAccess(), probe.automation(askUser: false))
+    }
+
+    private func apply(_ r: (ProbeResult, ProbeResult)) {
+        fullDisk = r.0
+        automation = r.1
+    }
+
+    /// Kullanıcıya sormaz. Uygulama öne gelince çağrılır. Sorgular (TCC, Apple Event izni) ana iş parçacığını
+    /// bekletmesin diye arka planda yapılır; sonuç MainActor'da uygulanır.
+    public func refresh() async {
+        generation += 1
+        let mine = generation
+        let probe = self.probe
+        let r = await Task.detached(priority: .utility) { Self.probeAll(probe) }.value
+        guard mine == generation else { return }
+        apply(r)
     }
 
     /// "Şimdi izin iste": macOS sorabilir; arka plan kuyruğunda çalışır.
     public func requestAutomation() async {
+        generation += 1 // süren yenileme bu sonucu ezmesin
         let probe = self.probe
         let r = await Task.detached(priority: .userInitiated) { probe.automation(askUser: true) }.value
         automation = r

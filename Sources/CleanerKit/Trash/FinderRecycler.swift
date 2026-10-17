@@ -41,8 +41,9 @@ public struct FinderRecycler: Recycling {
     }
 
     /// Bütün yolları TEK Finder olayıyla taşır (Finder bir kez parola/Touch ID ister). Olaydan sonra her kaynak
-    /// ayrı ayrı `lstat` ile doğrulanır: kalkan başarılı, yerinde duran `stillExists`. Olay hatası (iptal -128 ...)
-    /// hepsine aynı hata olarak dağıtılır.
+    /// ayrı ayrı `lstat` ile doğrulanır: kalkan başarılı (konum nil), yerinde duran `stillExists`. Olay hata ya da
+    /// zaman aşımı dönse bile (Finder bir kısmını taşımış olabilir) her yol ayrı ayrılır: kalkan başarılı, yerinde
+    /// duran o hatayla.
     public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
         guard !urls.isEmpty else { return [:] }
         let batchSender = self.batchSender
@@ -59,11 +60,7 @@ public struct FinderRecycler: Recycling {
         }
         var out: [URL: Result<URL?, any Error>] = [:]
         for u in urls {
-            if let failure {
-                out[u] = .failure(failure)
-            } else {
-                out[u] = Self.itemExists(at: u) ? .failure(FinderRecycleError.stillExists) : .success(nil)
-            }
+            out[u] = Self.itemExists(at: u) ? .failure(failure ?? FinderRecycleError.stillExists) : .success(nil)
         }
         return out
     }

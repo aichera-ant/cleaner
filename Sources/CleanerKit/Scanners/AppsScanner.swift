@@ -10,7 +10,9 @@ import Foundation
 ///   - Kesin (`.bundleID`): bundle id ile TAM eşleşen `~/Library` yolları (`PathPolicy.leftoverParents`, grup
 ///     kapsayıcısında `group.<id>` / `<TAKIM>.<id>`). Yeşil, `preselect = false` (arayüz uygulama seçilince işaretler).
 ///   - Ad tabanlı (`.name`): `LeftoverNames` kuralları (yalnız izinli klasörlerin doğrudan çocuğu, genel ad yok,
-///     başka kurulu uygulamanın adı ya da bundle id'siyle çakışan yok, sembolik bağlantı yok). Sarı, `preselect = false`.
+///     başka kurulu uygulamanın adı ya da bundle id'siyle ve ana klasörde bir komut satırı çalıştırılabiliriyle
+///     çakışan yok, sabit ret listesi ve kimlik bilgisi sözcükleri yok, `.<ad>-*` yalnız klasör, sembolik bağlantı
+///     yok). Sarı, `preselect = false`; içinde (ya da doğrudan çocuğunda) `.git` olan klasör kırmızı.
 ///   - Uygulama kilitliyse (çalışıyor, Cleaner, yapısal ret) artıkları da kilitlidir; uygulama kırmızıysa (komut
 ///     satırı bağlantısı) kesin artıklar da sarıdır. Aynı bundle id'li başka kopya kuruluysa artık öğesi üretilmez.
 /// - Kilit yalnız: çalışan, Cleaner'ın kendisi ve dar istisnanın yapısal reddi (`.rejected`, `.blocked`: iç içe,
@@ -87,7 +89,8 @@ public struct AppsScanner: Cleaner {
         // Aynı bundle id'yi taşıyan birden çok kopya: artıklar ortaktır, hiçbirine eklenmez.
         var byID: [String: [URL]] = [:]
         for f in found { byID[f.info.bundleID.lowercased(), default: []].append(f.bundle) }
-        let installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader)
+        let installed = InstalledApps(roots: policy.appRoots + policy.conflictOnlyAppRoots, reader: reader,
+                                      commandDirectories: policy.commandDirectories + (binDirectories ?? []))
         let listings = Self.nameListings(home: context.home)
         var items: [CleanItem] = []
         for f in found {
@@ -119,32 +122,48 @@ public struct AppsScanner: Cleaner {
     /// Ad tabanlı artık adayları (kesin artıklar hariç). Her biri `PathPolicy.nameLeftoverRejectionReason` ve
     /// `trashRejectionReason`'dan geçer; başka kurulu uygulamayla çakışan alınmaz.
     static func nameLeftovers(info: AppBundleInfo, bundle: URL, exact: [URL], context: ScanContext,
-                              installed: InstalledApps, listings: [String: [String]]) -> [(url: URL, parent: String, key: String)] {
+                              installed: InstalledApps, listings: [String: [String]]) -> [NameLeftover] {
         let keys = info.leftoverNameKeys.sorted()
         guard !keys.isEmpty else { return [] }
         let policy = context.pathPolicy
         let bundleKey = InstalledApps.bundleKey(bundle)
         let exactKeys = Set(exact.map { PathUtil.canonicalKey($0.path) })
-        var out: [(url: URL, parent: String, key: String)] = []
+        var out: [NameLeftover] = []
         for rel in LeftoverNames.parents {
             let dir = rel.isEmpty ? context.home : context.home.appending(path: rel)
             for entry in listings[rel] ?? [] {
-                // Tam eşleşen ad önce (önek eşleşmesinden güçlü).
-                guard let key = keys.first(where: { LeftoverNames.matchesExactly(entry: entry, parent: rel, key: $0) })
-                    ?? keys.first(where: { LeftoverNames.matches(entry: entry, parent: rel, key: $0) })
-                else { continue }
+                // Tam eşleşen ad önce (önek eşleşmesinden güçlü). Önek (`.<ad>-*`) yalnız klasörde.
                 let url = dir.appending(path: entry)
+                guard LeftoverNames.deniedReason(entry: entry, parent: rel) == nil else { continue }
+                var st = stat()
+                guard lstat(url.path, &st) == 0 else { continue }
+                let isDir = (st.st_mode & S_IFMT) == S_IFDIR
+                guard let key = keys.first(where: { LeftoverNames.matchesExactly(entry: entry, parent: rel, key: $0) })
+                    ?? keys.first(where: { LeftoverNames.matches(entry: entry, parent: rel, key: $0, isDirectory: isDir) })
+                else { continue }
                 guard !exactKeys.contains(PathUtil.canonicalKey(url.path)),
                       policy.nameLeftoverRejectionReason(for: url, key: key) == nil,
                       policy.trashRejectionReason(for: url) == nil,
                       installed.conflict(entry: entry, parent: rel, excludingBundleKey: bundleKey, ownerKey: key) == nil
                 else { continue }
-                out.append((url, rel, key))
+                out.append(NameLeftover(url: url, parent: rel, key: key,
+                                        hasGitRepository: isDir && LeftoverNames.containsGitRepository(url)))
                 if out.count >= maxNameLeftovers { return out }
             }
         }
         return out
     }
+
+    /// Ad tabanlı artık adayı.
+    struct NameLeftover {
+        var url: URL
+        var parent: String
+        var key: String
+        /// Klasörün kendisi ya da doğrudan çocuğu `.git` içeriyor (kişisel ayar/dotfiles olabilir): kırmızı.
+        var hasGitRepository: Bool
+    }
+
+    static let gitRepositoryNote = "İçinde git deposu var; kişisel ayar/dotfiles olabilir"
 
     /// Uygulama köklerinde aynı bundle id'yi taşıyan başka `.app` paketleri (`excluding` hariç).
     static func otherBundles(withID bundleID: String, excluding: URL, appRoots: [URL], reader: SafeReader) -> [URL] {
@@ -260,17 +279,19 @@ public struct AppsScanner: Cleaner {
         // Artıklar uygulamanın kilidini izler (çalışıyor, Cleaner, yapısal ret). Uygulama kırmızıysa (komut satırı
         // bağlantısı) artıkları en az sarı.
         let leftoverLock: String? = lock.map { "uygulama kilitli: \($0)" }
-        func leftoverItem(_ url: URL, parent: String, m: SizeMeasurement, match: LeftoverMatch, key: String?) -> CleanItem {
+        func leftoverItem(_ url: URL, parent: String, m: SizeMeasurement, match: LeftoverMatch, key: String?,
+                          hasGit: Bool = false) -> CleanItem {
             let label = parent.isEmpty ? "~" : (parent as NSString).lastPathComponent
-            let note = match == .bundleID
+            var note = match == .bundleID
                 ? "\(info.name) uygulamasının verisi (\(label); bundle id ile eşleşti)"
                 : "Adı benziyor; başka bir uygulamaya da ait olabilir (\(info.name), \(label))"
+            if hasGit { note = Self.gitRepositoryNote + "; " + note }
             return CleanItem(
                 category: .apps,
                 name: "\(info.name): \(url.lastPathComponent)",
                 path: url.path,
                 allocatedBytes: m.allocatedBytes,
-                risk: match == .bundleID && risk != .red ? .green : .yellow,
+                risk: hasGit ? .red : (match == .bundleID && risk != .red ? .green : .yellow),
                 dateSignal: m.newestModification.map { .modified(days: DateSignal.days(from: $0, to: context.now)) } ?? .unknown,
                 lockReason: leftoverLock,
                 note: note,
@@ -287,7 +308,7 @@ public struct AppsScanner: Cleaner {
             out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .bundleID, key: nil))
         }
         for (l, m) in zip(named, namedSizes) {
-            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .name, key: l.key))
+            out.append(leftoverItem(l.url, parent: l.parent, m: m, match: .name, key: l.key, hasGit: l.hasGitRepository))
         }
         return out
     }

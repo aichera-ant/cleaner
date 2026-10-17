@@ -86,11 +86,13 @@ public final class AppModel {
         return v
     }
 
-    /// Öğe açıklaması; öğe başına bir kez hesaplanır (yalnız görünen satırlar için).
+    /// Öğe açıklaması; öğe başına bir kez hesaplanır (yalnız görünen satırlar için). Önbellek, açıklamanın
+    /// hesaplandığı öğenin kendisini de tutar: aynı id'li ama alanları farklı öğe (ör. "Bunu tut" seçimiyle
+    /// `SelectionState.effective` risk/yöntem/ön seçimi değişmiş kopya) önbellekten değil yeniden hesaplanır.
     public func explanation(for item: CleanItem) -> ItemExplanation {
-        if let e = cache.explanations[item.id] { return e }
+        if let c = cache.explanations[item.id], c.item == item { return c.explanation }
         let e = ItemExplainer.explain(item)
-        cache.explanations[item.id] = e
+        cache.explanations[item.id] = (item, e)
         return e
     }
 
@@ -216,7 +218,7 @@ public final class AppModel {
 final class DerivedCache {
     var groups: [DuplicateGroup]?
     var sorted: [String: [CleanItem]] = [:]
-    var explanations: [String: ItemExplanation] = [:]
+    var explanations: [String: (item: CleanItem, explanation: ItemExplanation)] = [:]
     var apps: [String: AppsLayout] = [:]
     func reset() { groups = nil; sorted = [:]; explanations = [:]; apps = [:] }
 }

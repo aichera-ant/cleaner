@@ -67,15 +67,20 @@ struct LeftoverNameRuleTests {
             #expect(!LeftoverNames.isUsableKey(LeftoverNames.normalize(bad)), "\(bad)")
         }
         #expect(LeftoverNames.isUsableKey("antigravity"))
-        #expect(LeftoverNames.matches(entry: ".antigravity", parent: "", key: "antigravity"))
-        #expect(LeftoverNames.matches(entry: ".antigravity-ide", parent: "", key: "antigravity"))
-        #expect(LeftoverNames.matches(entry: ".antigravity-ide", parent: "", key: "antigravityide"))
-        #expect(!LeftoverNames.matches(entry: "antigravity", parent: "", key: "antigravity")) // gizli değil
-        #expect(!LeftoverNames.matches(entry: ".antigravityx", parent: "", key: "antigravity"))
-        #expect(LeftoverNames.matches(entry: "Antigravity IDE", parent: "Library/Application Support", key: "antigravityide"))
-        #expect(!LeftoverNames.matches(entry: "Antigravity-x", parent: "Library/Caches", key: "antigravity")) // önek yalnız ~
-        #expect(LeftoverNames.matches(entry: "Antigravity.plist", parent: "Library/Preferences", key: "antigravity"))
-        #expect(!LeftoverNames.matches(entry: "Antigravity", parent: "Library/Preferences", key: "antigravity"))
+        func m(_ e: String, _ p: String, _ k: String, dir: Bool = true) -> Bool {
+            LeftoverNames.matches(entry: e, parent: p, key: k, isDirectory: dir)
+        }
+        #expect(m(".antigravity", "", "antigravity"))
+        #expect(m(".antigravity", "", "antigravity", dir: false)) // tam ad dosya da olabilir
+        #expect(m(".antigravity-ide", "", "antigravity"))
+        #expect(!m(".antigravity-ide", "", "antigravity", dir: false)) // önek yalnız klasörde
+        #expect(m(".antigravity-ide", "", "antigravityide"))
+        #expect(!m("antigravity", "", "antigravity")) // gizli değil
+        #expect(!m(".antigravityx", "", "antigravity"))
+        #expect(m("Antigravity IDE", "Library/Application Support", "antigravityide"))
+        #expect(!m("Antigravity-x", "Library/Caches", "antigravity")) // önek yalnız ~
+        #expect(m("Antigravity.plist", "Library/Preferences", "antigravity"))
+        #expect(!m("Antigravity", "Library/Preferences", "antigravity"))
     }
 
     @Test("PathPolicy: yalnız izinli klasörlerin doğrudan çocuğu; Containers, iCloud, bağlantı, iç içe yok")
@@ -87,7 +92,7 @@ struct LeftoverNameRuleTests {
             try t.dir("Library/Application Support/Zeplin"), try t.dir("Library/Caches/zeplin"),
             try t.file("Library/Preferences/Zeplin.plist"), try t.dir("Library/Logs/Zeplin"),
             try t.dir("Library/Saved Application State/Zeplin.savedState"), try t.dir("Library/HTTPStorages/Zeplin"),
-            try t.dir("Library/WebKit/Zeplin"), try t.dir(".zeplin"), try t.file(".zeplin-cli"),
+            try t.dir("Library/WebKit/Zeplin"), try t.dir(".zeplin"), try t.dir(".zeplin-cli"),
         ]
         for u in ok { #expect(p.nameLeftoverRejectionReason(for: u, key: key) == nil, "\(u.path)") }
         let mobile = try t.dir("Library/Mobile Documents/Zeplin")
@@ -98,6 +103,8 @@ struct LeftoverNameRuleTests {
             try t.dir("Library/Application Support/Zeplin/Zeplin"), try t.dir("Documents/Zeplin"),
             try t.dir("Zeplin"), // gizli değil
             try t.dir("Library/Caches/ZeplinX"), t.home.appending(path: "Library/Caches/Yok"),
+            try t.file(".zeplin-cfg"), // önek eşleşmesi dosyada değil
+            try t.dir(".zeplin-token"), try t.file(".zeplin-env"), // kimlik bilgisi sözcüğü
             URL(fileURLWithPath: t.home.path + "/Library/Caches/../Caches/zeplin/../../../.ssh"),
         ]
         for u in bad { #expect(p.nameLeftoverRejectionReason(for: u, key: key) != nil, "\(u.path)") }
