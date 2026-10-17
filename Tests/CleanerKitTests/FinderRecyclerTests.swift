@@ -46,7 +46,7 @@ struct FinderRecyclerTests {
     func errorMapping() {
         #expect(FinderRecycler.mapError(code: -128, message: nil) == .userCancelled)
         #expect(FinderRecycler.mapError(code: -1743, message: "x") == .automationDenied)
-        #expect(FinderRecycler.mapError(code: -1744, message: nil) == .automationDenied)
+        #expect(FinderRecycler.mapError(code: -1744, message: nil) == .automationConsentRequired)
         #expect(FinderRecycler.mapError(code: -1712, message: nil) == .timedOut)
         #expect(FinderRecycler.mapError(code: -600, message: nil) == .finderUnavailable)
         #expect(FinderRecycler.mapError(code: -609, message: nil) == .finderUnavailable)

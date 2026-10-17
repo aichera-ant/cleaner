@@ -174,8 +174,11 @@ public struct AppsScanner: Cleaner {
 
     /// Adayın içindeki komut(lar) için not.
     static func internalCommandNote(_ names: [String]) -> String {
-        "İçindeki \(names.map { "`\($0)`" }.joined(separator: ", ")) komutu da silinir; terminalde artık çalışmaz"
+        "İçindeki \(names.map { "`\($0)`" }.joined(separator: ", ")) \(internalCommandMarker); terminalde artık çalışmaz"
     }
+
+    /// İç komut notunun sabit parçası (taşıma anında notun varlığı buna bakılarak denetlenir).
+    static let internalCommandMarker = "komutu da silinir"
 
     /// Uygulama köklerinde aynı bundle id'yi taşıyan başka `.app` paketleri (`excluding` hariç).
     static func otherBundles(withID bundleID: String, excluding: URL, appRoots: [URL], reader: SafeReader) -> [URL] {

@@ -280,6 +280,19 @@ public struct TrashOutcome: Sendable, Equatable {
 
     private static func isAppSkip(_ l: Line) -> Bool { l.reason.contains(appFailedSkipReason) }
 
+    /// Taşınamayan öğe sayısı (bütün retler, uygulaması taşınamadığı için atlanan artıklar dahil; atlananlar hariç).
+    public var failedCount: Int { refused.count }
+
+    /// En az bir ret Tam Disk Erişimi eksikliğinden mi (macOS uygulama verisi koruması)?
+    public var needsFullDiskAccess: Bool { refused.contains { $0.reason.contains(Trasher.fullDiskAccessMarker) } }
+
+    /// Sonuç başlığı: ret varsa açıkça "N öğe taşınamadı".
+    public var headline: String {
+        if failedCount == 0 { return "Temizlik tamamlandı" }
+        if doneCount == 0 { return failedCount == 1 ? "Öğe taşınamadı" : "\(failedCount) öğenin hiçbiri taşınamadı" }
+        return "\(failedCount) öğe taşınamadı"
+    }
+
     public var freedBytes: UInt64 { trashedBytes &+ commandBytes }
     public var doneCount: Int { trashedCount + commandCount }
 

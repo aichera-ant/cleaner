@@ -273,13 +273,22 @@ public struct Trasher: Sendable {
                                                   excludingBundleKey: parentKey, ownerKey: key) {
                 return "artık: başka kurulu uygulamayla da eşleşiyor (\(other))"
             }
-            // İçinde kendi komutu olan aday taramada kırmızı işaretlenmiş olmalı (taramadan sonra kurulduysa yeniden tara).
-            if item.risk != .red, !env.installed.commandMatches(entry: item.url.lastPathComponent, parent: rel,
-                                                               candidate: item.url, ownerBundleKey: parentKey).internal.isEmpty {
+            // İçinde kendi komutu olan aday taramada kırmızı VE iç komut notuyla işaretlenmiş olmalı (taramadan sonra
+            // kurulduysa ya da öğe başka nedenle, ör. git deposu, kırmızıysa kullanıcı komutun silineceğini görmedi:
+            // yeniden tara).
+            let inner = env.installed.commandMatches(entry: item.url.lastPathComponent, parent: rel,
+                                                     candidate: item.url, ownerBundleKey: parentKey).internal
+            if !inner.isEmpty, item.risk != .red || !Trasher.notesInternalCommands(item.note, inner) {
                 return "artık: içinde komut satırı aracı var; yeniden tara"
             }
         }
         return nil
+    }
+
+    /// Öğe notu, içindeki komutların her birinin silineceğini söylüyor mu (`AppsScanner.internalCommandNote`)?
+    static func notesInternalCommands(_ note: String?, _ names: [String]) -> Bool {
+        guard let note, note.contains(AppsScanner.internalCommandMarker) else { return false }
+        return names.allSatisfy { note.contains("`\($0)`") }
     }
 
     /// Tarama sonucuna göre ret: öğenin alt ağacında (ilişkili yollar dahil) kilitli ya da yalnız bilgi
@@ -361,10 +370,72 @@ public struct Trasher: Sendable {
         return false
     }
 
-    /// Taşıma hatası için okunur neden.
-    static func describe(_ error: any Error) -> String {
-        return isPermissionError(error) ? "izin yok (yönetici izni gerekir): \(error.localizedDescription)"
-            : error.localizedDescription
+    /// Tam Disk Erişimi gerektiren retlerin ortak metni (arayüz bu metne bakıp Sistem Ayarları'na yönlendirir).
+    public static let fullDiskAccessMarker = "Tam Disk Erişimi gerekir"
+
+    static let fullDiskAccessRefusal = "\(fullDiskAccessMarker) (macOS uygulama verisi koruması; parola değil): "
+        + "Sistem Ayarları → Gizlilik ve Güvenlik → Tam Disk Erişimi'nde Cleaner'ı açıp yeniden deneyin"
+
+    /// macOS'un uygulama verisi / gizlilik korumasındaki (TCC) ana klasör yolları: buradaki EPERM yönetici
+    /// parolasıyla değil, Tam Disk Erişimi ile aşılır. Ana klasöre göreli.
+    static let fullDiskAccessRoots = [
+        "Library/Containers", "Library/Group Containers", "Library/Mail", "Library/Safari", "Library/Messages",
+        "Library/Cookies", "Library/Calendars", "Library/Reminders", "Library/HomeKit", "Library/Suggestions",
+        "Library/Metadata/CoreSpotlight", "Library/Application Support/AddressBook",
+        "Library/Application Support/CallHistoryDB", "Library/Application Support/com.apple.TCC",
+        "Library/Application Support/MobileSync",
+    ]
+
+    /// Yol Tam Disk Erişimi korumasındaki bir ana klasör yolu mu (kendisi ya da altı)?
+    static func isFullDiskAccessProtected(_ path: String, home: URL) -> Bool {
+        let homeKey = PathUtil.key(PathUtil.canonicalDirectory(home))
+        let candidates = [PathUtil.key(path), PathUtil.canonicalKey(path)]
+        return fullDiskAccessRoots.contains { rel in
+            let root = PathUtil.key(homeKey + "/" + rel)
+            return candidates.contains { PathUtil.isSameOrDescendant($0, of: root) }
+        }
+    }
+
+    /// Taşıma hatası için okunur neden. `path` ve `home` verilirse Tam Disk Erişimi korumasındaki yolda izin
+    /// hatası "yönetici izni" yerine Tam Disk Erişimi yönlendirmesiyle anlatılır.
+    ///
+    /// Tam Disk Erişimi metni yalnız EPERM'de (TCC EPERM verir). EACCES (sıradan izin) ve öğede ya da üst klasöründe
+    /// değiştirilemez/kilitli bayrağı (`uchg`/`schg`, `uappnd`/`sappnd`) varsa o metin verilir.
+    static func describe(_ error: any Error, path: String? = nil, home: URL? = nil,
+                         hasLockFlag: (String) -> Bool = Trasher.hasLockFlag) -> String {
+        guard isPermissionError(error) else { return error.localizedDescription }
+        if let path, hasLockFlag(path) || hasLockFlag((path as NSString).deletingLastPathComponent) {
+            return "kilitli (değiştirilemez bayrağı var, ör. Finder'da 'Kilitli'): kilidi kaldırıp yeniden deneyin"
+        }
+        if isEPERM(error), let path, let home, isFullDiskAccessProtected(path, home: home) { return fullDiskAccessRefusal }
+        return "izin yok (yönetici izni gerekir): \(error.localizedDescription)"
+    }
+
+    /// Hata (ya da altındaki hata) POSIX EPERM mi?
+    static func isEPERM(_ error: any Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSPOSIXErrorDomain { return ns.code == Int(EPERM) }
+        guard let under = ns.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+        return under.domain == NSPOSIXErrorDomain && under.code == Int(EPERM)
+    }
+
+    /// Yolda (bağlantı izlenmeden) değiştirilemez ya da yalnız-ekleme bayrağı var mı? Yalnız `lstat`.
+    static func hasLockFlag(_ path: String) -> Bool {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return false }
+        let mask = UInt32(UF_IMMUTABLE | SF_IMMUTABLE | UF_APPEND | SF_APPEND)
+        return st.st_flags & mask != 0
+    }
+
+    /// Günlük: öğe, yöntem ve sonuç (yol ve neden `.public`; içerik yok).
+    func logResult(_ item: CleanItem, method: String, ok: Bool, reason: String? = nil, dryRun: Bool = false) {
+        let log = TrashLog.logger
+        let tag = dryRun ? " (deneme)" : ""
+        if ok {
+            log.info("[\(method, privacy: .public)]\(tag, privacy: .public) taşındı: \(item.path, privacy: .public)")
+        } else {
+            log.error("[\(method, privacy: .public)]\(tag, privacy: .public) reddedildi: \(item.path, privacy: .public): \(reason ?? "-", privacy: .public)")
+        }
     }
 
     /// Ana giriş: tarama sonucundaki id'leri taşır (dry-run'da yalnız raporlar).
@@ -444,6 +515,7 @@ public struct Trasher: Sendable {
         for item in selected {
             if let reason = rejectionReason(for: item) ?? scanContextRejection(item, scanItems: scan) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                logResult(item, method: "ön denetim", ok: false, reason: reason, dryRun: dryRun)
                 if isApp(item) { failedApps.insert(item.id) }
                 continue
             }
@@ -475,6 +547,7 @@ public struct Trasher: Sendable {
             }
             if item.isLeftover, let parentID = item.parentAppID, failedApps.contains(parentID) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appFailedSkip))
+                logResult(item, method: "artık", ok: false, reason: Trasher.appFailedSkip, dryRun: dryRun)
                 continue
             }
             let isVirtual = item.path.hasPrefix("/docker/")
@@ -515,11 +588,13 @@ public struct Trasher: Sendable {
             else {
                 report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.authorizationRefusal))
                 failedApps.insert(item.id)
+                logResult(item, method: "Finder", ok: false, reason: Trasher.authorizationRefusal)
                 continue
             }
             if let reason = appCheck(for: item, allowingAuthorization: true).reason {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 failedApps.insert(item.id)
+                logResult(item, method: "Finder", ok: false, reason: reason)
                 continue
             }
             batch.append(item)
@@ -527,18 +602,29 @@ public struct Trasher: Sendable {
         guard let privileged = privilegedRecycler, !batch.isEmpty else { return }
         // Sonuç, verilen URL nesnesiyle aranır (taşımadan sonra yeniden kurulan URL farklı olabilir).
         let urls = batch.map(\.url)
-        let results = await privileged.recycle(urls)
+        TrashLog.logger.info("Yetkili taşıma (Finder): \(urls.count, privacy: .public) uygulama paketi")
+        // Finder'ın yedek tek öğeli olayından önce her öğe yeniden doğrulanır (dar istisna, `appCheck` ile aynı).
+        let byURL = Dictionary(zip(urls, batch), uniquingKeysWith: { a, _ in a })
+        let results = await privileged.recycle(urls, revalidate: { url in
+            guard let item = byURL[url] else { return "taşıma listesinde olmayan yol" }
+            return self.appCheck(for: item, allowingAuthorization: true).reason
+        })
         for (item, url) in zip(batch, urls) {
             switch results[url] {
             case .success(let resulting):
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
                 covered.append((PathUtil.canonicalKey(item.path), item.path))
+                logResult(item, method: "Finder", ok: true)
             case .failure(let error):
-                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
+                let reason = "taşınamadı: \(Trasher.describe(error, path: item.path, home: policy.home))"
+                report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 failedApps.insert(item.id)
+                logResult(item, method: "Finder", ok: false, reason: reason)
             case nil:
-                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: yetkili taşıyıcı sonuç vermedi"))
+                let reason = "taşınamadı: yetkili taşıyıcı sonuç vermedi"
+                report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 failedApps.insert(item.id)
+                logResult(item, method: "Finder", ok: false, reason: reason)
             }
         }
     }
@@ -700,14 +786,17 @@ public struct Trasher: Sendable {
             }
             guard let result else {
                 report.refused.append(.init(id: item.id, path: item.path, reason: "komut çalıştırılamadı: \(cmd)"))
+                logResult(item, method: "komut", ok: false, reason: "komut çalıştırılamadı")
                 return .failed
             }
             if result.succeeded {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .command, detail: cmd))
+                logResult(item, method: "komut", ok: true)
                 return .done
             }
             let why = result.timedOut ? "zaman aşımı" : "çıkış kodu \(result.exitCode)"
             report.refused.append(.init(id: item.id, path: item.path, reason: "komut başarısız (\(why)): \(cmd)"))
+            logResult(item, method: "komut", ok: false, reason: why)
             return .failed
         case .trash:
             if item.isLeftover {
@@ -722,17 +811,23 @@ public struct Trasher: Sendable {
             if isAppBundle {
                 if let reason = appCheck(for: item).reason {
                     report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                    logResult(item, method: "trashItem", ok: false, reason: reason)
                     return .failed
                 }
                 // Yetkili taşıyıcı yalnız doğrulanmış `needsAuthorization` uygulama paketi için; toplu çağrıya ertelenir.
-                if usesPrivilegedRecycler(item) { return .needsPrivileged }
+                if usesPrivilegedRecycler(item) {
+                    TrashLog.logger.info("[Finder] sıraya alındı (yetki gerekir): \(item.path, privacy: .public)")
+                    return .needsPrivileged
+                }
             } else if let reason = pathRejectionReason(for: item) {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                logResult(item, method: "trashItem", ok: false, reason: reason)
                 return .failed
             }
             do {
                 let resulting = try await recycler.recycle(item.url)
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+                logResult(item, method: "trashItem", ok: true)
                 return .done
             } catch {
                 // Uygulama paketi normal taşımada izin hatası aldı (ör. Uygulama Yönetimi): yetkili taşıyıcı varsa
@@ -740,16 +835,21 @@ public struct Trasher: Sendable {
                 if isAppBundle, Trasher.isPermissionError(error) {
                     guard privilegedRecycler != nil else {
                         report.refused.append(.init(id: item.id, path: item.path, reason: Trasher.appManagementRefusal))
+                        logResult(item, method: "trashItem", ok: false, reason: Trasher.appManagementRefusal)
                         return .failed
                     }
                     if let reason = appCheck(for: item, allowingAuthorization: true).reason {
                         report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                        logResult(item, method: "trashItem", ok: false, reason: reason)
                         return .failed
                     }
+                    TrashLog.logger.notice("[trashItem] izin hatası, Finder'a yedek: \(item.path, privacy: .public)")
                     return .needsPrivileged
                 }
                 // Paket taşınamadıysa bağlı artıkları bu çalıştırmada atlanır (`run`).
-                report.refused.append(.init(id: item.id, path: item.path, reason: "taşınamadı: \(Trasher.describe(error))"))
+                let reason = "taşınamadı: \(Trasher.describe(error, path: item.path, home: policy.home))"
+                report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+                logResult(item, method: "trashItem", ok: false, reason: reason)
                 return .failed
             }
         }
@@ -760,6 +860,7 @@ public struct Trasher: Sendable {
                                  report: inout TrashReport) async -> Bool {
         if let reason = leftoverPathRejection(item) ?? leftoverParentRejection(item, parent: parent, env: env) {
             report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+            logResult(item, method: "trashItem/artık", ok: false, reason: reason, dryRun: dryRun)
             return false
         }
         if dryRun {
@@ -770,9 +871,12 @@ public struct Trasher: Sendable {
             // Yetkili taşıyıcı artıklara ASLA verilmez.
             let resulting = try await recycler.recycle(item.url)
             report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
+            logResult(item, method: "trashItem/artık", ok: true)
             return true
         } catch {
-            report.refused.append(.init(id: item.id, path: item.path, reason: "artık taşınamadı: \(Trasher.describe(error))"))
+            let reason = "artık taşınamadı: \(Trasher.describe(error, path: item.path, home: policy.home))"
+            report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+            logResult(item, method: "trashItem/artık", ok: false, reason: reason)
             return false
         }
     }

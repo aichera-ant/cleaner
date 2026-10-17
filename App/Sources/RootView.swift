@@ -12,7 +12,7 @@ struct RootView: View {
             SidebarView(model: model, ui: ui, perms: perms)
                 .frame(width: 224)
             Divider()
-            MainPane(model: model, ui: ui)
+            MainPane(model: model, ui: ui, perms: perms)
         }
         .background(Theme.window)
         .overlay { SheetLayer(model: model, ui: ui, perms: perms) }
@@ -30,6 +30,7 @@ struct RootView: View {
 struct MainPane: View {
     let model: AppModel
     let ui: UIState
+    let perms: PermissionModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,7 +56,7 @@ struct MainPane: View {
         case .scanning:
             ScanningView(progress: model.progress)
         case .result:
-            ResultView(model: model, ui: ui)
+            ResultView(model: model, ui: ui, perms: perms)
         case .idle where model.snapshot == nil:
             WelcomeView(model: model)
         default:
