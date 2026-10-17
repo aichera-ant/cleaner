@@ -54,43 +54,69 @@ public struct TrashReport: Codable, Sendable {
 /// Uygulama istisnası (`apps` kategorisi): `PathPolicy.appBundleRejectionReason` + Apple (`com.apple.*`) değil
 /// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile). Artıklar (`relatedPaths`) paketten
 /// SONRA taşınır; paket taşınamazsa artıklara dokunulmaz.
+///
+/// Yetkili taşıma (`privilegedRecycler`, gerçekte `WorkspaceRecycler`: macOS parola/Touch ID ister): YALNIZ
+/// taze taramada `needsAuthorization == true` olan `apps` öğesinin `.app` paketi için, dar istisna taşıma anında
+/// yeniden doğrulanınca (yazma sorunu yalnız yetkiyle aşılabilen türdense) kullanılır. Başka hiçbir yol (artıklar
+/// dahil) yetkili taşıyıcıya verilmez; artıklar normal taşıyıcıyla, mevcut kurallarla taşınır. Yetkili taşıyıcı
+/// verilmemişse (CLI) bu öğeler reddedilir.
 public struct Trasher: Sendable {
     public let policy: PathPolicy
     public let commands: any CommandRunning
     /// Uygulama taşımadan hemen önce "çalışıyor mu?" kontrolü için.
     public let processes: any ProcessListing
     public var commandTimeout: Duration
-    /// Taşıma işlemi. Gerçekte `FileManager.trashItem`; testte geçici klasöre taşıyan sahte verilir
+    /// Normal taşıyıcı. Gerçekte `FileManagerRecycler`; testte geçici klasöre taşıyan sahte verilir
     /// (gerçek Çöp Kutusu'na dokunulmasın diye).
-    let mover: @Sendable (URL) throws -> URL?
+    let recycler: any Recycling
+    /// Yetkili taşıyıcı (yalnız `needsAuthorization` uygulama paketi için). nil: bu öğeler reddedilir.
+    let privilegedRecycler: (any Recycling)?
     /// Cleaner'ın kendi çalıştırılabilir dosyası ve bundle id'si: kendi paketini taşımasın.
     let selfExecutable: URL?
     let selfBundleID: String?
 
+    /// - Parameters:
+    ///   - recycler: normal taşıyıcı (varsayılan `FileManager.trashItem`).
+    ///   - privilegedRecycler: yetkili taşıyıcı (arayüz `WorkspaceRecycler` verir; CLI vermez).
     public init(policy: PathPolicy, commands: any CommandRunning, processes: any ProcessListing = LiveProcessLister(),
-                commandTimeout: Duration = .seconds(600)) {
+                commandTimeout: Duration = .seconds(600), recycler: any Recycling = FileManagerRecycler(),
+                privilegedRecycler: (any Recycling)? = nil) {
         self.init(policy: policy, commands: commands, processes: processes, commandTimeout: commandTimeout,
-                  mover: Trasher.systemTrash)
+                  selfExecutable: Bundle.main.executableURL, selfBundleID: Bundle.main.bundleIdentifier,
+                  recycler: recycler, privilegedRecycler: privilegedRecycler)
     }
 
     init(policy: PathPolicy, commands: any CommandRunning, processes: any ProcessListing = LiveProcessLister(),
          commandTimeout: Duration = .seconds(600),
          selfExecutable: URL? = Bundle.main.executableURL, selfBundleID: String? = Bundle.main.bundleIdentifier,
-         mover: @escaping @Sendable (URL) throws -> URL?) {
+         recycler: any Recycling, privilegedRecycler: (any Recycling)? = nil) {
         self.policy = policy
         self.commands = commands
         self.processes = processes
         self.commandTimeout = commandTimeout
         self.selfExecutable = selfExecutable
         self.selfBundleID = selfBundleID
-        self.mover = mover
+        self.recycler = recycler
+        self.privilegedRecycler = privilegedRecycler
     }
 
-    static let systemTrash: @Sendable (URL) throws -> URL? = { url in
-        var resulting: NSURL?
-        try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
-        return resulting as URL?
+    /// Test kolaylığı: kapanışla taşıyan normal taşıyıcı.
+    init(policy: PathPolicy, commands: any CommandRunning, processes: any ProcessListing = LiveProcessLister(),
+         commandTimeout: Duration = .seconds(600),
+         selfExecutable: URL? = Bundle.main.executableURL, selfBundleID: String? = Bundle.main.bundleIdentifier,
+         mover: @escaping @Sendable (URL) throws -> URL?, privilegedRecycler: (any Recycling)? = nil) {
+        self.init(policy: policy, commands: commands, processes: processes, commandTimeout: commandTimeout,
+                  selfExecutable: selfExecutable, selfBundleID: selfBundleID,
+                  recycler: ClosureRecycler(body: mover), privilegedRecycler: privilegedRecycler)
     }
+
+    /// Öğe yetkili taşıyıcıyla mı taşınacak? Yalnız taze taramada `needsAuthorization` olan uygulama öğesi ve
+    /// yetkili taşıyıcı verilmişse.
+    func usesPrivilegedRecycler(_ item: CleanItem) -> Bool {
+        item.category == .apps && item.needsAuthorization == true && privilegedRecycler != nil
+    }
+
+    static let authorizationRefusal = "Uygulama Yönetimi koruması: Cleaner uygulamasından kaldırın"
 
     /// Bir uygulama öğesinin en fazla kaç artığı olabilir (bozuk/elle değiştirilmiş öğeye karşı sınır).
     static let maxRelatedPaths = 32
@@ -103,6 +129,10 @@ public struct Trasher: Sendable {
         // Öğe kimliği yoluyla tutarlı olmalı (elle değiştirilmiş öğe ile başka yol taşınmasın).
         if item.id != CleanItem.makeID(path: item.path) { return "id ile yol uyuşmuyor" }
         if let reason = groupFieldRejection(item) { return reason }
+        if item.needsAuthorization == true {
+            guard item.category == .apps else { return "yetki işareti yalnız uygulama öğesinde olabilir" }
+            guard privilegedRecycler != nil else { return Trasher.authorizationRefusal }
+        }
         if item.category == .apps, item.method != .trash { return "uygulama yalnız Çöp Kutusu'na taşınır" }
         switch item.method {
         case .none:
@@ -159,7 +189,8 @@ public struct Trasher: Sendable {
             && item.risk == scanned.risk && item.lockReason == scanned.lockReason && item.method == scanned.method
             && item.groupID == scanned.groupID && item.keeperPath == scanned.keeperPath
             && item.isDuplicateKeeper == scanned.isDuplicateKeeper && item.relatedPaths == scanned.relatedPaths
-            && item.preselect == scanned.preselect
+            && item.preselect == scanned.preselect && item.needsAuthorization == scanned.needsAuthorization
+            && item.ifNotKeptRisk == scanned.ifNotKeptRisk && item.ifNotKeptLockReason == scanned.ifNotKeptLockReason
     }
 
     /// id -> tarama öğesi. Taramada birden çok kez geçen id belirsizdir (`ambiguous`), hiçbiri kullanılmaz.
@@ -179,7 +210,10 @@ public struct Trasher: Sendable {
 
     /// Uygulama kontrolü; geçerse doğrulanmış bundle id'yi de döner (artıklar taşınırken yeniden kullanılır).
     func appCheck(for item: CleanItem) -> (reason: String?, bundleID: String?) {
-        if let reason = policy.appBundleRejectionReason(for: item.url) { return (reason, nil) }
+        // Yetki yalnız taze taramada işaretli öğede ve yetkili taşıyıcı varken tolere edilir; diğer bütün koşullar aynı.
+        if let reason = policy.appBundleRejectionReason(for: item.url, allowingAuthorization: usesPrivilegedRecycler(item)) {
+            return (reason, nil)
+        }
         let reader = SafeReader(cloudGuard: CloudGuard(home: policy.home))
         guard let info = AppBundleInfo.read(item.url, reader: reader) else {
             return ("Info.plist okunamadı ya da bundle id geçersiz", nil)
@@ -233,13 +267,23 @@ public struct Trasher: Sendable {
 
     /// Ana giriş: tarama sonucundaki id'leri taşır (dry-run'da yalnız raporlar).
     ///
+    /// Arayüz YALNIZ bu girişi kullanır ve `scan` olarak bellekte tuttuğu taze `ScanEngine` sonucunu verir.
+    /// JSON'dan (diskten, başka süreçten) okunan tarama sonucu ne buraya ne `trash(_:scanItems:)`'a verilir.
+    ///
     /// Güvenilir kaynak yalnız `scan`'dir (aynı taramanın bütün öğeleri): her id tarama öğesine çözülür ve bütün
     /// kararlar o öğenin alanlarıyla verilir. Taramada olmayan ya da birden çok kez geçen id reddedilir.
     /// Alt ağacında kilitli/bilgi öğesi olan öğe reddedilir. Aynı çalıştırmada hem üst hem alt öğe seçilirse alt öğe
     /// "üst öğeyle birlikte taşınıyor" diye atlanır (ret değildir, toplama girmez). Bir mükerrer grubunun hiç
-    /// kopyası kalmayacaksa son kopya reddedilir.
-    public func trash(ids: [String], scan: [CleanItem], dryRun: Bool = true) async -> TrashReport {
+    /// kopyası kalmayacaksa bir kopya kalacak şekilde ret yapılır.
+    ///
+    /// - Parameter keepers: mükerrer "Bunu tut" seçimi (groupID → tutulacak yol). Yol o grubun bu taramadaki bir
+    ///   üyesi değilse grubun seçilen bütün öğeleri reddedilir. Tutulan kopya taşınmaz (bilgi öğesi sayılır, onu
+    ///   içeren üst öğe de taşınmaz); taramanın varsayılan tutulacak kopyası artık taşınabilir (tarayıcının
+    ///   `ifNotKeptRisk`/`ifNotKeptLockReason` değeriyle; kilitliyse yine taşınmaz). Son kopya kuralı aynen geçerli.
+    public func trash(ids: [String], scan: [CleanItem], dryRun: Bool = true,
+                      keepers: [String: String] = [:]) async -> TrashReport {
         var report = TrashReport(dryRun: dryRun, done: [], refused: [])
+        let (scan, invalidGroups) = Trasher.applyKeepers(keepers, to: scan)
         let (byID, ambiguous) = Trasher.index(scan)
         var selected: [CleanItem] = []
         var seen = Set<String>()
@@ -253,15 +297,22 @@ public struct Trasher: Sendable {
                 report.refused.append(.init(id: id, path: "", reason: "bu taramada bulunamadı"))
                 continue
             }
+            if let g = scanned.groupID, let why = invalidGroups[g] {
+                report.refused.append(.init(id: id, path: scanned.path, reason: why))
+                continue
+            }
             selected.append(scanned)
         }
         return await run(selected, scan: scan, dryRun: dryRun, report: report)
     }
 
-    /// Öğe listesiyle giriş (arayüz JSON'dan öğe verebilir). Öğeler güvenilmez: her öğe id'siyle `scanItems`'taki
+    /// Öğe listesiyle giriş (CLI ve testler). Öğeler güvenilmez: her öğe id'siyle `scanItems`'taki
     /// tarama öğesine eşlenir; eşleşmeyen ya da güvenlikle ilgili herhangi bir alanı (yol, kategori, risk, kilit,
-    /// yöntem, grup alanları, ilişkili yollar, ön seçim) farklı olan reddedilir. Kararlar tarama öğesiyle verilir.
-    public func trash(_ items: [CleanItem], dryRun: Bool = true, scanItems: [CleanItem]) async -> TrashReport {
+    /// yöntem, grup alanları, ilişkili yollar, ön seçim, yetki) farklı olan reddedilir. Kararlar tarama öğesiyle
+    /// verilir. `scanItems` taze tarama olmalıdır; arayüz bu girişi kullanmaz (`trash(ids:scan:)`), JSON'dan
+    /// okunan tarama sonucu `scanItems` olarak verilmez. `keepers`: `trash(ids:scan:keepers:)` ile aynı.
+    public func trash(_ items: [CleanItem], dryRun: Bool = true, scanItems: [CleanItem],
+                      keepers: [String: String] = [:]) async -> TrashReport {
         var report = TrashReport(dryRun: dryRun, done: [], refused: [])
         let (byID, ambiguous) = Trasher.index(scanItems)
         var ids: [String] = []
@@ -274,7 +325,7 @@ public struct Trasher: Sendable {
             }
             ids.append(item.id)
         }
-        let rest = await trash(ids: ids, scan: scanItems, dryRun: dryRun)
+        let rest = await trash(ids: ids, scan: scanItems, dryRun: dryRun, keepers: keepers)
         report.done += rest.done
         report.refused += rest.refused
         report.skipped += rest.skipped
@@ -318,34 +369,115 @@ public struct Trasher: Sendable {
 
     static func depth(_ path: String) -> Int { path.split(separator: "/").count }
 
+    /// "Bunu tut" seçimini taramaya uygular. Dönüş: düzenlenmiş tarama ve seçimi geçersiz grupların ret nedeni.
+    /// Yeni tutulacak kopya bilgi öğesi olur (taşınmaz, üst öğesini bloklar); eski tutulacak kopya tarayıcının
+    /// `ifNotKept*` değerleriyle taşınabilir öğe olur (varsayılan seçimde değil); diğerlerinin `keeperPath`'i değişir.
+    static func applyKeepers(_ keepers: [String: String], to scan: [CleanItem]) -> (items: [CleanItem], invalid: [String: String]) {
+        guard !keepers.isEmpty else { return (scan, [:]) }
+        var items = scan
+        var invalid: [String: String] = [:]
+        for (g, wanted) in keepers.sorted(by: { $0.key < $1.key }) {
+            let idx = items.indices.filter { items[$0].groupID == g && items[$0].category == .duplicates }
+            guard !idx.isEmpty else { continue } // grup bu taramada yok: id'leri zaten bulunamaz
+            let key = PathUtil.canonicalKey(wanted)
+            guard let k = idx.first(where: { PathUtil.canonicalKey(items[$0].path) == key }) else {
+                invalid[g] = "tutulacak kopya bu mükerrer grubunun üyesi değil: \(wanted)"
+                continue
+            }
+            if items[k].isDuplicateKeeper { continue } // zaten varsayılan
+            let newKeeper = items[k].path
+            for i in idx {
+                if i == k {
+                    items[i].risk = .info
+                    items[i].method = .none
+                    items[i].preselect = false
+                } else if items[i].isDuplicateKeeper {
+                    items[i].method = .trash
+                    items[i].lockReason = items[i].ifNotKeptLockReason
+                    items[i].risk = items[i].lockReason != nil ? .locked : (items[i].ifNotKeptRisk ?? .yellow)
+                    items[i].preselect = false
+                    items[i].allocatedBytes = Trasher.allocatedBytes(items[i].path)
+                    items[i].ifNotKeptRisk = nil
+                    items[i].ifNotKeptLockReason = nil
+                }
+                items[i].keeperPath = newKeeper
+            }
+        }
+        return (items, invalid)
+    }
+
+    /// Dosyanın ayrılan boyutu (yalnız `lstat`; içerik okunmaz). Yoksa 0.
+    static func allocatedBytes(_ path: String) -> UInt64 {
+        var st = stat()
+        guard lstat(path, &st) == 0, st.st_blocks > 0 else { return 0 }
+        return UInt64(st.st_blocks) &* 512
+    }
+
     /// Mükerrer grupları: taşıma sonunda grubun en az bir kopyası (diskte var olan, taşınmayan) kalmalı.
-    /// Kalmayacaksa grubun seçilen son öğesi reddedilir. Kabul edilen herhangi bir öğenin (ilişkili yollar dahil)
-    /// altında kalan kopya da taşınıyor sayılır (aynı çalıştırmada üst klasörü taşınan kopya kalmaz).
+    /// Kabul edilen herhangi bir öğenin (ilişkili yollar dahil) altında kalan kopya da taşınıyor sayılır.
+    /// Kalmayacaksa: önce seçilen ve başka bir kabul edilen öğece kapsanmayan (diskte var olan) son kopya
+    /// reddedilir; böyle kopya yoksa diskte var olan bir kopyayı kapsayan bütün öğeler (üst klasörler ve kopyanın
+    /// kendisi) reddedilir. Hiçbir kopya diskte yoksa grubun seçilen son öğesi reddedilir.
     private func applyGroupRule(_ accepted: [CleanItem], scanItems: [CleanItem], report: inout TrashReport) -> [CleanItem] {
         var rejected = Set<String>()
-        let groups = Set(accepted.compactMap(\.groupID))
+        // Komut öğeleri de temkinli olarak kapsayan sayılır; docker sanal yolları hariç.
+        let keysByID: [String: [String]] = Dictionary(accepted.map { item in
+            (item.id, item.path.hasPrefix("/docker/") ? [] : item.footprint.map { PathUtil.canonicalKey($0) })
+        }, uniquingKeysWith: { a, _ in a })
+        let allKeys = keysByID.values.flatMap { $0 }
+        // Seçilen öğelerin grupları + kopyası (ya da tutulacağı) seçilen bir üst öğenin altında kalan gruplar.
+        var groups = Set(accepted.compactMap(\.groupID))
+        for i in scanItems {
+            guard let g = i.groupID, !groups.contains(g) else { continue }
+            let keys = ([i.path] + (i.keeperPath.map { [$0] } ?? [])).map { PathUtil.canonicalKey($0) }
+            if keys.contains(where: { k in allKeys.contains { PathUtil.isSameOrDescendant(k, of: $0) } }) {
+                groups.insert(g)
+            }
+        }
         guard !groups.isEmpty else { return accepted }
-        // Bu çalıştırmada taşınacak/kapsanacak yollar (docker sanal yolları hariç). Komut öğeleri de temkinli
-        // olarak kapsayan sayılır.
-        let coveredKeys = accepted.filter { !$0.path.hasPrefix("/docker/") }
-            .flatMap(\.footprint).map { PathUtil.canonicalKey($0) }
+        func coverers(_ key: String) -> [CleanItem] {
+            accepted.filter { item in
+                !rejected.contains(item.id)
+                    && (keysByID[item.id] ?? []).contains { PathUtil.isSameOrDescendant(key, of: $0) }
+            }
+        }
+        func exists(_ path: String) -> Bool {
+            var st = stat()
+            return lstat(path, &st) == 0
+        }
+        func reject(_ item: CleanItem, _ reason: String) {
+            guard rejected.insert(item.id).inserted else { return }
+            report.refused.append(.init(id: item.id, path: item.path, reason: reason))
+        }
+        let lastCopy = "mükerrer grubunun son kopyası; en az bir kopya kalmalı"
         for g in groups.sorted() {
-            let selected = accepted.filter { $0.groupID == g && !rejected.contains($0.id) }
             // Grubun bilinen bütün kopyaları: anahtar -> gerçek yol.
             var members: [String: String] = [:]
             for i in scanItems where i.groupID == g { members[PathUtil.canonicalKey(i.path)] = i.path }
-            for i in selected {
+            for i in accepted where i.groupID == g {
                 members[PathUtil.canonicalKey(i.path)] = i.path
                 if let k = i.keeperPath { members[PathUtil.canonicalKey(k)] = k }
             }
-            let staying = members.filter { key, path in
-                var st = stat()
-                return !coveredKeys.contains(where: { PathUtil.isSameOrDescendant(key, of: $0) }) && lstat(path, &st) == 0
+            let existing = members.filter { exists($0.value) }.sorted { $0.value < $1.value }
+            if existing.contains(where: { coverers($0.key).isEmpty }) { continue } // bir kopya kalıyor
+            let selected = accepted.filter { $0.groupID == g && !rejected.contains($0.id) }
+            // 1) Kendisinden başka hiçbir öğece kapsanmayan seçilen kopya: yalnız onu reddetmek yeter.
+            if let pick = selected.last(where: { s in
+                exists(s.path) && coverers(PathUtil.canonicalKey(s.path)).allSatisfy { $0.id == s.id }
+            }) {
+                reject(pick, lastCopy)
+                continue
             }
-            if staying.isEmpty, let last = selected.last {
-                rejected.insert(last.id)
-                report.refused.append(.init(id: last.id, path: last.path, reason: "mükerrer grubunun son kopyası; en az bir kopya kalmalı"))
+            // 2) Var olan bir kopyayı (en az öğece kapsananı) kapsayan her şey reddedilir.
+            if let keep = existing.min(by: { coverers($0.key).count < coverers($1.key).count }) {
+                for c in coverers(keep.key) {
+                    let own = c.groupID == g && PathUtil.canonicalKey(c.path) == keep.key
+                    reject(c, own ? lastCopy : "içinde mükerrer grubunun son kopyası var: \(keep.value)")
+                }
+                continue
             }
+            // 3) Hiçbir kopya diskte yok.
+            if let last = selected.last { reject(last, lastCopy) }
         }
         return accepted.filter { !rejected.contains($0.id) }
     }
@@ -387,7 +519,7 @@ public struct Trasher: Sendable {
             if dryRun {
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: nil))
                 if item.category == .apps, let id = appCheck(for: item).bundleID {
-                    appendLeftovers(item, bundleID: id, dryRun: true, to: &report)
+                    await appendLeftovers(item, bundleID: id, dryRun: true, to: &report)
                 }
                 return true
             }
@@ -404,8 +536,13 @@ public struct Trasher: Sendable {
                 report.refused.append(.init(id: item.id, path: item.path, reason: reason))
                 return false
             }
+            // Yetkili taşıyıcı yalnız burada, yalnız doğrulanmış `needsAuthorization` uygulama paketi için.
+            var mover = recycler
+            if item.category == .apps, verifiedBundleID != nil, usesPrivilegedRecycler(item), let privileged = privilegedRecycler {
+                mover = privileged
+            }
             do {
-                let resulting = try mover(item.url)
+                let resulting = try await mover.recycle(item.url)
                 report.done.append(.init(id: item.id, path: item.path, bytes: item.allocatedBytes, action: .trashed, detail: resulting?.path))
             } catch {
                 // Paket taşınamadıysa artıklarına dokunulmaz.
@@ -413,7 +550,7 @@ public struct Trasher: Sendable {
                 return false
             }
             if let verifiedBundleID {
-                appendLeftovers(item, bundleID: verifiedBundleID, dryRun: false, to: &report)
+                await appendLeftovers(item, bundleID: verifiedBundleID, dryRun: false, to: &report)
             }
             return true
         }
@@ -422,7 +559,7 @@ public struct Trasher: Sendable {
     /// Uygulama artıkları: ana paketten sonra, her biri ayrı ayrı son kontrolle. Boyutları ana öğenin
     /// boyutuna dahil olduğundan kendi satırları 0 bayttır. Bu arada silinmiş artık sessizce atlanır.
     /// `bundleID`: paket taşınmadan hemen önce Info.plist'ten doğrulanan kimlik.
-    private func appendLeftovers(_ item: CleanItem, bundleID: String, dryRun: Bool, to report: inout TrashReport) {
+    private func appendLeftovers(_ item: CleanItem, bundleID: String, dryRun: Bool, to report: inout TrashReport) async {
         guard item.category == .apps, let related = item.relatedPaths else { return }
         for r in related {
             let url = URL(fileURLWithPath: r)
@@ -436,7 +573,8 @@ public struct Trasher: Sendable {
                 continue
             }
             do {
-                let resulting = try mover(url)
+                // Artıklar her zaman normal taşıyıcıyla (yetkili taşıyıcı ana klasör yollarına verilmez).
+                let resulting = try await recycler.recycle(url)
                 report.done.append(.init(id: item.id, path: r, bytes: 0, action: .trashed, detail: resulting?.path))
             } catch {
                 report.refused.append(.init(id: item.id, path: r, reason: "artık taşınamadı: \(Trasher.describe(error))"))
