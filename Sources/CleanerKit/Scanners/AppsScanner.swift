@@ -9,8 +9,12 @@ import Foundation
 ///   kapsayıcısında `group.<id>` / `<TAKIM>.<id>`). Adla tahmin edilenler alınmaz, yalnız notta "alınmadı" diye
 ///   gösterilir. Öğenin boyutu paket + artıklardır; artıklar `relatedPaths` ile paketle birlikte taşınır.
 /// - Risk: çalışan, Cleaner'ın kendisi, komut satırından kullanılan, son `staleDays` günde artığı değişen ve
-///   yazma izni olmayan (sahibi root) paket kilitli; son `staleDays` günde açılan bilgi; geri kalanı (hiç açılmamış
-///   ya da uzun süredir açılmamış) sarı "Yeniden indirilir", seçili değil.
+///   yetkiyle de aşılamayan yazma sorunu olan (üst klasör salt okunur, başka kullanıcının paketi ...) paket kilitli;
+///   son `staleDays` günde açılan bilgi; geri kalanı (hiç açılmamış ya da uzun süredir açılmamış) sarı
+///   "Yeniden indirilir", seçili değil.
+/// - Uygulama Yönetimi koruması (`EPERM`) ya da root sahipliği yüzünden yazılamayan ama dar istisnanın diğer
+///   bütün koşullarını sağlayan paket kilitlenmez: `needsAuthorization = true`, `preselect = false`, not
+///   "macOS parola ya da Touch ID isteyecek". Yalnız `Trasher`'a yetkili taşıyıcı verilmişse taşınır.
 public struct AppsScanner: Cleaner {
     public let id = "apps"
     public var categories: Set<Category> { [.apps] }
@@ -132,6 +136,7 @@ public struct AppsScanner: Cleaner {
 
         var lock: String?
         var risk = Risk.yellow
+        var needsAuthorization = false
         if running.isRunning(bundle: bundle, bundleID: info.bundleID) || context.signals.processes.isRunning(info.name) {
             lock = "çalışıyor"
         } else if Self.isSelf(bundle: bundle, bundleID: info.bundleID) {
@@ -142,12 +147,21 @@ public struct AppsScanner: Cleaner {
             risk = .info
         } else if lastUsed == nil, let days = activityDays, days <= staleDays {
             lock = "Spotlight kaydı yok ama son \(days) günde kullanılmış (ayar/önbellek değişti)"
-        } else if let problem = policy.appBundleWriteProblem(for: bundle) {
-            lock = problem
+        } else {
+            switch policy.appBundleCheck(for: bundle) {
+            case .rejected(let reason): lock = reason
+            case .valid(.writable): break
+            case .valid(.blocked(let reason)): lock = reason
+            case .valid(.needsAuthorization):
+                // Uygulama Yönetimi koruması / root sahipliği: kilitli değil, yalnız yetkili taşıyıcıyla
+                // (macOS parola/Touch ID) taşınır; varsayılan seçimde değil.
+                needsAuthorization = true
+            }
         }
 
         var notes: [String] = []
         if risk == .yellow && lock == nil { notes.append("Yeniden indirilir") }
+        if needsAuthorization { notes.append("macOS parola ya da Touch ID isteyecek") }
         if risk == .info, let days = date.days { notes.append("son \(days) günde açıldı") }
         notes.append(info.bundleID + (info.version.map { " \($0)" } ?? ""))
         if !leftovers.isEmpty {
@@ -176,7 +190,9 @@ public struct AppsScanner: Cleaner {
             lockReason: lock,
             note: notes.joined(separator: "; "),
             method: .trash,
-            relatedPaths: leftovers.map(\.url.path)
+            relatedPaths: leftovers.map(\.url.path),
+            preselect: needsAuthorization ? false : nil,
+            needsAuthorization: needsAuthorization ? true : nil
         )
     }
 

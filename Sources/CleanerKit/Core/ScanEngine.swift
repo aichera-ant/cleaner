@@ -25,6 +25,41 @@ public struct ScanReport: Codable, Sendable {
     }
 }
 
+/// Tarama ilerlemesi: her tarayıcının başında (`started`) ve sonunda (`finished` / `failed`) bir olay.
+/// `completed`: olay anında biten tarayıcı sayısı (bu olay dahil); `total`: bu taramada çalışacak tarayıcı sayısı
+/// (bütün aşamalar). İptalde (`CancellationError`) olay gönderilmez.
+public struct ScanProgress: Sendable, Equatable {
+    public enum Event: Sendable, Equatable {
+        case started
+        case finished(itemCount: Int, bytes: UInt64)
+        case failed(String)
+    }
+
+    /// Tarayıcı kimliği (`Cleaner.id`).
+    public var scanner: String
+    /// Tarayıcının kategorileri (`Category.allCases` sırasında).
+    public var categories: [Category]
+    public var event: Event
+    public var completed: Int
+    public var total: Int
+
+    public init(scanner: String, categories: [Category], event: Event, completed: Int, total: Int) {
+        self.scanner = scanner
+        self.categories = categories
+        self.event = event
+        self.completed = completed
+        self.total = total
+    }
+}
+
+/// Eşzamanlı tarayıcılar arasında biten sayısı.
+private final class CompletionTally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() -> Int { lock.withLock { count += 1; return count } }
+}
+
 /// Tarayıcıları çalıştırır ve sonuçları tek, tutarlı bir listede birleştirir:
 ///
 /// 1. Korunan yollar atılır.
@@ -48,13 +83,18 @@ public struct ScanEngine: Sendable {
     ///   - fullLockCheck: true (varsayılan) ise kategori süzgeci verilse de BÜTÜN tarayıcılar çalışır; kilit ve
     ///     çift sayım hesabı tam taramaya göre yapılır, süzgeç en sonda uygulanır. false yalnız hızlı
     ///     görüntüleme içindir (`scan --category`); taşıma kararı için kullanılmaz.
-    public func scan(_ context: ScanContext, categories: Set<Category>? = nil, fullLockCheck: Bool = true) async throws -> ScanReport {
+    ///   - progress: her tarayıcının başında ve sonunda çağrılır (bütün aşamalar). Eşzamanlı görevlerden
+    ///     çağrılabilir; arayüz ana aktöre kendisi geçer.
+    public func scan(_ context: ScanContext, categories: Set<Category>? = nil, fullLockCheck: Bool = true,
+                     progress: (@Sendable (ScanProgress) -> Void)? = nil) async throws -> ScanReport {
         // Arayüz unutsa bile: bu süreçte (ve devralan alt süreçlerde) dataless dosya okunarak indirilmez.
         CloudGuard.disableDatalessMaterializationForProcess()
         let selected = registry.cleaners.enumerated().filter { _, c in
             fullLockCheck || (categories.map { !$0.isDisjoint(with: c.categories) } ?? true)
         }
         typealias Partial = (Int, [CleanItem], ScanReport.ScannerError?)
+        let total = selected.count
+        let tally = CompletionTally()
         var partials: [Partial] = []
         var phaseContext = context
         for phase in Set(selected.map { $0.element.phase }).sorted() {
@@ -63,12 +103,23 @@ public struct ScanEngine: Sendable {
             try await withThrowingTaskGroup(of: Partial.self) { group in
                 for (index, cleaner) in batch {
                     group.addTask {
+                        let cats = Category.allCases.filter(cleaner.categories.contains)
+                        progress?(ScanProgress(scanner: cleaner.id, categories: cats, event: .started,
+                                               completed: tally.value, total: total))
                         do {
-                            return (index, try await cleaner.scan(ctx), nil)
+                            let items = try await cleaner.scan(ctx)
+                            let bytes = items.reduce(UInt64(0)) { $0 &+ $1.allocatedBytes }
+                            progress?(ScanProgress(scanner: cleaner.id, categories: cats,
+                                                   event: .finished(itemCount: items.count, bytes: bytes),
+                                                   completed: tally.increment(), total: total))
+                            return (index, items, nil)
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
-                            return (index, [], .init(scanner: cleaner.id, message: String(describing: error)))
+                            let message = String(describing: error)
+                            progress?(ScanProgress(scanner: cleaner.id, categories: cats, event: .failed(message),
+                                                   completed: tally.increment(), total: total))
+                            return (index, [], .init(scanner: cleaner.id, message: message))
                         }
                     }
                 }

@@ -227,6 +227,15 @@ public struct DuplicatesScanner: Cleaner {
         return a.path < b.path
     }
 
+    /// Tutulmayan kopyanın riski ve kilidi: git'te takipli kilitli; arşiv ve uygulama verisi sarı; diğerleri yeşil.
+    static func nonKeeperRisk(_ l: Location) -> (Risk, String?) {
+        switch l {
+        case .tracked: (.green, "Git deposunda takipli")
+        case .archive, .appData: (.yellow, nil)
+        default: (.green, nil)
+        }
+    }
+
     private func makeItems(_ group: Group, tracked: Set<String>, context: ScanContext) async throws -> [CleanItem] {
         let home = PathUtil.canonicalDirectory(context.home)
         let homeAlt = context.home.standardizedFileURL.path
@@ -242,8 +251,10 @@ public struct DuplicatesScanner: Cleaner {
         }
         let keeper = ranked[0]
         let sizeText = ByteCountFormatter.string(fromByteCount: Int64(group.size), countStyle: .file)
+        // Kullanıcı "Bunu tut" ile başka kopyayı seçerse bu kopyanın alacağı risk ve kilit (tutulmayan kopya kuralı).
+        let (keeperRisk, keeperLock) = Self.nonKeeperRisk(loc(keeper))
         var items: [CleanItem] = []
-        items.append(CleanItem(
+        var keeperItem = CleanItem(
             category: .duplicates,
             name: (keeper.path as NSString).lastPathComponent,
             path: keeper.path,
@@ -254,25 +265,20 @@ public struct DuplicatesScanner: Cleaner {
             method: .none,
             groupID: group.key,
             keeperPath: keeper.path
-        ))
+        )
+        keeperItem.ifNotKeptRisk = keeperRisk
+        keeperItem.ifNotKeptLockReason = keeperLock
+        items.append(keeperItem)
         for c in ranked.dropFirst() {
             try context.checkCancellation()
             let url = URL(fileURLWithPath: c.path)
             let m = try await context.sizeMeter.measure(url)
             let l = loc(c)
-            let base = "Aynısı duruyor: \(keeper.path)"
-            var risk = Risk.green
-            var lock: String?
-            var note = base
+            let (risk, lock) = Self.nonKeeperRisk(l)
+            var note = "Aynısı duruyor: \(keeper.path)"
             switch l {
-            case .tracked:
-                lock = "Git deposunda takipli"
-            case .archive:
-                risk = .yellow
-                note += " · Müzik/Fotoğraflar arşivindeki kopya; otomatik seçilmez."
-            case .appData:
-                risk = .yellow
-                note += " · Uygulama verisi; otomatik seçilmez."
+            case .archive: note += " · Müzik/Fotoğraflar arşivindeki kopya; otomatik seçilmez."
+            case .appData: note += " · Uygulama verisi; otomatik seçilmez."
             default: break
             }
             items.append(CleanItem(

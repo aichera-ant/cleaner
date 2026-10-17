@@ -40,6 +40,9 @@ public enum Category: String, Codable, Sendable, CaseIterable {
     case apps
 }
 
+/// `Category` Foundation'daki adla çakışabildiği için arayüzde kullanılacak takma ad.
+public typealias ItemCategory = Category
+
 /// Tarih sinyali. "Açıldı" (Spotlight son kullanım) ile "değişti" (dosya tarihi) ayrı gösterilir.
 public enum DateSignal: Codable, Sendable, Equatable {
     case opened(days: Int)
@@ -131,6 +134,16 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     public var groupID: String?
     /// Yalnız `duplicates`: grubun tutulacak kopyasının yolu (bu öğenin kendisi de olabilir).
     public var keeperPath: String?
+    /// Yalnız `apps`: paket macOS Uygulama Yönetimi koruması ya da root sahipliği yüzünden kullanıcı yetkisiyle
+    /// taşınamıyor; dar istisnanın diğer bütün koşullarını sağlıyor. Yalnız yetkili taşıyıcı (`NSWorkspace.recycle`,
+    /// macOS parola/Touch ID ister) ile taşınabilir. Varsayılan seçimde değildir. nil/false: gerekmiyor.
+    public var needsAuthorization: Bool?
+    /// Yalnız `duplicates` tutulacak kopyasında: kullanıcı başka kopyayı tutarsa bu kopyanın riski
+    /// (tarayıcının tutulmayan kopyaya vereceği risk). nil: bilinmiyor (sarı sayılır).
+    public var ifNotKeptRisk: Risk?
+    /// Yalnız `duplicates` tutulacak kopyasında: kullanıcı başka kopyayı tutarsa bu kopyanın kilit nedeni
+    /// (ör. git'te takipli). Doluysa bu kopya yine taşınamaz.
+    public var ifNotKeptLockReason: String?
 
     public init(
         category: Category,
@@ -145,7 +158,8 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         relatedPaths: [String]? = nil,
         preselect: Bool? = nil,
         groupID: String? = nil,
-        keeperPath: String? = nil
+        keeperPath: String? = nil,
+        needsAuthorization: Bool? = nil
     ) {
         let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
         self.id = CleanItem.makeID(path: standardized)
@@ -163,6 +177,7 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
         self.preselect = preselect
         self.groupID = groupID
         self.keeperPath = keeperPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        self.needsAuthorization = needsAuthorization
     }
 
     public var url: URL { URL(fileURLWithPath: path) }
@@ -170,7 +185,9 @@ public struct CleanItem: Codable, Sendable, Identifiable, Equatable {
     public var isLocked: Bool { risk == .locked || lockReason != nil }
 
     /// Varsayılan seçim: yalnız yeşil, kilitsiz, temizlenebilir ve `preselect` ile kapatılmamış öğeler.
-    public var isDefaultSelected: Bool { risk == .green && !isLocked && method != .none && preselect != false }
+    public var isDefaultSelected: Bool {
+        risk == .green && !isLocked && method != .none && preselect != false && needsAuthorization != true
+    }
 
     /// Tutulacak mükerrer kopya mı?
     public var isDuplicateKeeper: Bool { groupID != nil && keeperPath == path }

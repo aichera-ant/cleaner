@@ -27,6 +27,9 @@ public struct PathPolicy: Sendable {
     private let exactKeys: Set<String>
     /// Kendisi ve altı tamamen korunan yollar.
     private let subtreeKeys: [String]
+    /// Paket yazılabilirliği gözlemi. Gerçekte `access(2)` + `lstat`; testte sahte (root sahipliği ve
+    /// Uygulama Yönetimi koruması geçici klasörde kurulamaz).
+    var writeProbe: AppWriteProbe = .live
 
     /// Ana klasör dışındaki sistem yolları (kendisi ve altı).
     static let systemPrefixes = [
@@ -171,63 +174,100 @@ public struct PathPolicy: Sendable {
     /// yazıldığı haliyle ve çözülmüş haliyle bir uygulama kökünün DOĞRUDAN çocuğu, adı `<Ad>.app`, kendisi
     /// sembolik bağlantı değil gerçek klasör, kök sembolik bağlantı değil, kullanıcı paketi ve kökü yazabiliyor.
     /// Bundle id (Apple), çalışan uygulama ve Cleaner'ın kendisi `Trasher`'da denetlenir.
-    public func appBundleRejectionReason(for url: URL) -> String? {
+    ///
+    /// `allowingAuthorization`: true ise yalnız yetkiyle aşılabilen yazma sorunu (`AppWriteAccess.needsAuthorization`:
+    /// Uygulama Yönetimi koruması, root sahipliği) ret nedeni sayılmaz; diğer bütün koşullar aynen geçerlidir.
+    public func appBundleRejectionReason(for url: URL, allowingAuthorization: Bool = false) -> String? {
+        switch appBundleCheck(for: url) {
+        case .rejected(let reason):
+            return reason
+        case .valid(let access):
+            switch access {
+            case .writable: return nil
+            case .needsAuthorization(let reason): return allowingAuthorization ? nil : reason
+            case .blocked(let reason): return reason
+            }
+        }
+    }
+
+    enum AppBundleCheck: Equatable {
+        case rejected(String)
+        case valid(AppWriteAccess)
+    }
+
+    /// Yapısal kontroller (doğrudan çocuk, bağlantı yok ...) ve geçerse yazma durumu.
+    func appBundleCheck(for url: URL) -> AppBundleCheck {
         let path = url.standardizedFileURL.path
         let name = (path as NSString).lastPathComponent
         guard name.count > 4, !name.hasPrefix("."), name.lowercased().hasSuffix(".app") else {
-            return "uygulama paketi değil (.app değil)"
+            return .rejected("uygulama paketi değil (.app değil)")
         }
         let parent = (path as NSString).deletingLastPathComponent
         // Yazıldığı haliyle doğrudan çocuk (iç içe yol, alt klasör, `..` ile kaçış yok).
         guard let index = appRootLiteralKeys.firstIndex(of: PathUtil.key(parent)) else {
-            return "uygulama klasörünün doğrudan çocuğu değil"
+            return .rejected("uygulama klasörünün doğrudan çocuğu değil")
         }
         let rootPath = appRoots[index].standardizedFileURL.path
         // Kökün kendisi sembolik bağlantı olamaz (ör. /Applications -> ~/Documents).
         var rst = stat()
         guard lstat(rootPath, &rst) == 0, (rst.st_mode & S_IFMT) == S_IFDIR else {
-            return "uygulama klasörü gerçek bir klasör değil (sembolik bağlantı?)"
+            return .rejected("uygulama klasörü gerçek bir klasör değil (sembolik bağlantı?)")
         }
         // Çözülmüş haliyle de aynı kök (üst klasörlerdeki bağlantılar başka yere götürmüyor).
         guard let realParent = PathUtil.realPath(parent), PathUtil.key(realParent) == appRootKeys[index] else {
-            return "uygulama klasörü çözülünce başka yere gidiyor"
+            return .rejected("uygulama klasörü çözülünce başka yere gidiyor")
         }
         // Ana klasör içindeki tek uygulama kökü ~/Applications'tır; başka bir yere çözülen kök kabul edilmez.
         if PathUtil.isSameOrDescendant(appRootKeys[index], of: homeKey),
            appRootKeys[index] != PathUtil.key(homeKey + "/applications")
         {
-            return "uygulama klasörü ana klasörün başka bir yerine çözülüyor"
+            return .rejected("uygulama klasörü ana klasörün başka bir yerine çözülüyor")
         }
         var st = stat()
-        guard lstat(path, &st) == 0 else { return "yol yok" }
-        if (st.st_mode & S_IFMT) == S_IFLNK { return "sembolik bağlantı (paket değil)" }
-        guard (st.st_mode & S_IFMT) == S_IFDIR else { return "uygulama paketi değil (klasör değil)" }
-        return PathPolicy.writeProblem(bundle: path, parent: realParent, stat: st)
+        guard lstat(path, &st) == 0 else { return .rejected("yol yok") }
+        if (st.st_mode & S_IFMT) == S_IFLNK { return .rejected("sembolik bağlantı (paket değil)") }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { return .rejected("uygulama paketi değil (klasör değil)") }
+        return .valid(PathPolicy.classify(writeProbe.facts(path, realParent)))
     }
 
     /// Paketi taşımak için paketin kendisine ve üst klasöre yazma izni gerekir (klasör taşınırken `..`
-    /// güncellenir). Yoksa nedeni döner.
-    static func writeProblem(bundle: String, parent: String, stat st: stat) -> String? {
-        if access(parent, W_OK) != 0 { return "yazma izni yok: uygulama klasörüne yazılamıyor (yönetici izni gerekir)" }
-        if access(bundle, W_OK) != 0 {
-            let err = errno
-            // EPERM: izin bitleri değil macOS koruması (Uygulama Yönetimi / TCC, değiştirilemez bayrak).
-            if err == EPERM {
-                let root = st.st_uid == 0 ? ", sahibi root" : ""
-                return "macOS koruması (Uygulama Yönetimi izni gerekir\(root)); Finder ile taşıyın"
-            }
-            let owner = st.st_uid == 0 ? "sahibi root" : (st.st_uid == getuid() ? "paket salt okunur" : "sahibi başka kullanıcı")
-            return "yazma izni yok: \(owner), yönetici izni gerekir (Finder ya da uygulamanın kaldırıcısı ile)"
+    /// güncellenir). Yalnız `access(2)` ve `lstat` ile bakılır; hiçbir dosya taşınmaz ya da değiştirilmez.
+    ///
+    /// - Üst klasöre yazılamıyor: engelli (yetkili taşımaya da açılmaz).
+    /// - Pakete yazılamıyor ve `EPERM`: macOS Uygulama Yönetimi koruması (izin bitleri değil) → yetki gerekir.
+    /// - Pakete yazılamıyor, `EACCES` ve sahibi root: yetki gerekir (Finder gibi parola/Touch ID).
+    /// - Diğer (salt okunur kendi paketi, başka kullanıcının paketi, salt okunur birim ...): engelli.
+    static func classify(_ f: AppWriteFacts) -> AppWriteAccess {
+        if !f.parentWritable {
+            return .blocked("yazma izni yok: uygulama klasörüne yazılamıyor (yönetici izni gerekir)")
         }
-        return nil
+        guard let err = f.bundleErrno else { return .writable }
+        if err == EPERM {
+            let root = f.ownerUID == 0 ? ", sahibi root" : ""
+            return .needsAuthorization("macOS Uygulama Yönetimi koruması\(root); macOS parola ya da Touch ID isteyecek")
+        }
+        if err == EACCES, f.ownerUID == 0 {
+            return .needsAuthorization("sahibi root; macOS parola ya da Touch ID isteyecek")
+        }
+        if err == EACCES {
+            let owner = f.ownerUID == f.currentUID ? "paket salt okunur" : "sahibi başka kullanıcı"
+            return .blocked("yazma izni yok: \(owner), yönetici izni gerekir (Finder ya da uygulamanın kaldırıcısı ile)")
+        }
+        return .blocked("yazma izni yok (hata \(err)): \(String(cString: strerror(err)))")
     }
 
-    /// Yolun yazılabilirlik sorunu (tarayıcı kilit nedeni için). Sorun yoksa nil.
-    public func appBundleWriteProblem(for url: URL) -> String? {
+    /// Paketin yazma durumu (tarayıcı kilit/yetki kararı için). Yapısal kontrol yapmaz.
+    public func appBundleWriteAccess(for url: URL) -> AppWriteAccess {
         let path = url.standardizedFileURL.path
         var st = stat()
-        guard lstat(path, &st) == 0 else { return "yol yok" }
-        return PathPolicy.writeProblem(bundle: path, parent: (path as NSString).deletingLastPathComponent, stat: st)
+        guard lstat(path, &st) == 0 else { return .blocked("yol yok") }
+        let parent = (path as NSString).deletingLastPathComponent
+        return PathPolicy.classify(writeProbe.facts(path, PathUtil.realPath(parent) ?? parent))
+    }
+
+    /// Yolun yazılabilirlik sorunu (yetki gerektiren dahil). Sorun yoksa nil.
+    public func appBundleWriteProblem(for url: URL) -> String? {
+        appBundleWriteAccess(for: url).problem
     }
 
     /// Uygulama artığı Çöp Kutusu'na taşınamıyorsa nedenini döner. Artık, izinli `~/Library` klasörlerinden
@@ -253,5 +293,47 @@ public struct PathPolicy: Sendable {
         if let reason = protectionReason(for: url) { return reason }
         guard isInsideHome(url) else { return "ana klasör dışı" }
         return nil
+    }
+}
+
+/// Uygulama paketinin yazma durumu.
+public enum AppWriteAccess: Sendable, Equatable {
+    /// Kullanıcı yetkisiyle taşınabilir.
+    case writable
+    /// Yalnız yetkiyle (macOS parola/Touch ID, `NSWorkspace.recycle`) taşınabilir: Uygulama Yönetimi koruması
+    /// ya da root sahipliği.
+    case needsAuthorization(String)
+    /// Taşınamaz (yetkili taşımaya da açılmaz).
+    case blocked(String)
+
+    /// Sorun metni; yazılabilirse nil.
+    public var problem: String? {
+        switch self {
+        case .writable: nil
+        case .needsAuthorization(let r), .blocked(let r): r
+        }
+    }
+}
+
+/// Yazma gözlemi: üst klasör yazılabilir mi, pakete `access(W_OK)` hatası, sahibi.
+struct AppWriteFacts: Sendable, Equatable {
+    var parentWritable: Bool
+    /// nil: pakete yazılabiliyor.
+    var bundleErrno: Int32?
+    var ownerUID: uid_t
+    var currentUID: uid_t = getuid()
+}
+
+struct AppWriteProbe: Sendable {
+    /// (paket yolu, çözülmüş üst klasör) -> gözlem.
+    let facts: @Sendable (String, String) -> AppWriteFacts
+
+    static let live = AppWriteProbe { bundle, parent in
+        let parentOK = access(parent, W_OK) == 0
+        var bundleErr: Int32?
+        if access(bundle, W_OK) != 0 { bundleErr = errno }
+        var st = stat()
+        let uid: uid_t = lstat(bundle, &st) == 0 ? st.st_uid : uid_t.max
+        return AppWriteFacts(parentWritable: parentOK, bundleErrno: bundleErr, ownerUID: uid)
     }
 }
