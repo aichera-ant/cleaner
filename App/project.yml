@@ -1,0 +1,47 @@
+name: Cleaner
+options:
+  bundleIdPrefix: com.aichera
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  Cleaner:
+    path: ..
+targets:
+  Cleaner:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: Resources
+    dependencies:
+      - package: Cleaner
+        product: CleanerAppCore
+      - package: Cleaner
+        product: CleanerKit
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleName: Cleaner
+        CFBundleDisplayName: Cleaner
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: "Aichera"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aichera.cleaner
+        PRODUCT_NAME: Cleaner
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_ENTITLEMENTS: ""
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        MACOSX_DEPLOYMENT_TARGET: "14.0"

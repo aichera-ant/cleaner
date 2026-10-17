@@ -1,0 +1,52 @@
+import CleanerKit
+import Foundation
+@testable import CleanerAppCore
+
+func item(_ name: String, cat: CleanerKit.Category = .caches, bytes: UInt64 = 100, risk: Risk = .green,
+          lock: String? = nil, method: CleanMethod = .trash, preselect: Bool? = nil,
+          group: String? = nil, keeper: String? = nil) -> CleanItem {
+    CleanItem(category: cat, name: name, path: "/tmp/cleaner-test/\(name)", allocatedBytes: bytes, risk: risk,
+              lockReason: lock, method: method, preselect: preselect, groupID: group,
+              keeperPath: keeper.map { "/tmp/cleaner-test/\($0)" })
+}
+
+final class FakeScan: ScanService, @unchecked Sendable {
+    var snapshot: ScanSnapshot
+    var events: [AppScanProgress] = []
+    var error: (any Error)?
+    init(_ snapshot: ScanSnapshot) { self.snapshot = snapshot }
+    func scan(progress: (@Sendable (AppScanProgress) -> Void)?) async throws -> ScanSnapshot {
+        for e in events { progress?(e) }
+        if let error { throw error }
+        return snapshot
+    }
+}
+
+final class FakeTrash: TrashService, @unchecked Sendable {
+    struct Call { var ids: [String]; var scan: [CleanItem]; var keepers: [String: String]; var dryRun: Bool }
+    private let lock = NSLock()
+    private var _calls: [Call] = []
+    var calls: [Call] { lock.lock(); defer { lock.unlock() }; return _calls }
+    private func record(_ c: Call) { lock.lock(); _calls.append(c); lock.unlock() }
+    func trash(ids: [String], scan: [CleanItem], keepers: [String: String], dryRun: Bool) async -> TrashReport {
+        record(.init(ids: ids, scan: scan, keepers: keepers, dryRun: dryRun))
+        let done = ids.compactMap { id in scan.first { $0.id == id } }.map {
+            makeDone(id: $0.id, path: $0.path, bytes: $0.allocatedBytes, action: "trashed")
+        }
+        return TrashReport(dryRun: dryRun, done: done, refused: [])
+    }
+}
+
+/// Saat sahtesi (Sendable kutu).
+final class Clock: @unchecked Sendable {
+    var date: Date
+    init(_ d: Date) { date = d }
+}
+
+/// `TrashReport.Done` genel başlatıcı sunmaz; JSON'dan kurulur.
+func makeDone(id: String, path: String, bytes: UInt64, action: String, detail: String? = nil) -> TrashReport.Done {
+    var obj: [String: Any] = ["id": id, "path": path, "bytes": bytes, "action": action]
+    if let detail { obj["detail"] = detail }
+    let data = try! JSONSerialization.data(withJSONObject: obj)
+    return try! JSONDecoder().decode(TrashReport.Done.self, from: data)
+}
