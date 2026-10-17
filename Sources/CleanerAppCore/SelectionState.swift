@@ -127,6 +127,43 @@ public struct SelectionState: Sendable, Equatable {
         }
     }
 
+    // MARK: Toplu seçim (kategori / grup)
+
+    /// `items` içindeki seçilebilir öğeleri seçer. Kilitli, bilgi, temizlenemez ve tutulacak kopya asla seçilmez;
+    /// `needsAuthorization` olanlar seçilebilir (macOS parola ister). Her mükerrer grupta en az bir kopya kalır.
+    /// `includeRed == false` ise (etkin) kırmızı öğeler atlanır. Yalnız verilen öğelere dokunur (kategori sınırı).
+    public mutating func selectAll(in items: [CleanItem], includeRed: Bool = true) {
+        for i in items where isSelectable(i) {
+            if !includeRed && effective(i).risk == .red { continue }
+            trySelect(i)
+        }
+    }
+
+    /// `items` içindeki seçimi kaldırır (başka kategorilere dokunmaz).
+    public mutating func deselectAll(in items: [CleanItem]) {
+        for i in items { selectedIDs.remove(i.id) }
+    }
+
+    /// Bir mükerrer grubun fazla kopyalarını seçer (`members` o grubun üyeleri); tutulacak kopya ve kilitliler hariç, biri kalır.
+    public mutating func selectExtraCopies(of members: [CleanItem], includeRed: Bool = true) {
+        selectAll(in: members, includeRed: includeRed)
+    }
+
+    /// `selectAll(in:includeRed: true)` çağrısının ekleyeceği öğe sayısı ve bunlardan kırmızı olanların sayısı.
+    /// Onay iletişim kutusu için; seçimi değiştirmez.
+    public func selectAllPreview(in items: [CleanItem]) -> (added: Int, red: Int) {
+        var copy = self
+        copy.selectAll(in: items, includeRed: true)
+        let newIDs = copy.selectedIDs.subtracting(selectedIDs)
+        let added = items.filter { newIDs.contains($0.id) }
+        return (added.count, added.filter { effective($0).risk == .red }.count)
+    }
+
+    /// Seçili öğe var mı? ("Seçimi kaldır" görünürlüğü.)
+    public func anySelected(in items: [CleanItem]) -> Bool {
+        items.contains { isSelected($0) }
+    }
+
     /// Seçili ve hâlâ seçilebilir öğeler (kaynak sırasıyla), "Bunu tut" seçimi uygulanmış haliyle.
     public func selectedItems(in items: [CleanItem]) -> [CleanItem] {
         items.filter { selectedIDs.contains($0.id) && isSelectable($0) }.map(effective)

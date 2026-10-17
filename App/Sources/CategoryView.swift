@@ -9,11 +9,10 @@ struct CategoryView: View {
     let category: ItemCategory
 
     private var info: CategoryInfo { CategoryInfo.info(for: category) }
-    private var items: [CleanItem] { ui.sort.sorted(model.items.filter { $0.category == category }) }
 
     var body: some View {
         Scroller {
-            VStack(alignment: .leading, spacing: 12) {
+            AdaptiveStack(spacing: 12) {
                 HStack(alignment: .top, spacing: 14) {
                     CategoryTile(tint: Theme.tint(category), symbol: info.symbol, size: 34)
                     VStack(alignment: .leading, spacing: 4) {
@@ -25,55 +24,116 @@ struct CategoryView: View {
                 if category == .duplicates {
                     DuplicatesBody(model: model)
                 } else {
-                    listBody
+                    CategoryList(model: model, ui: ui, category: category)
                 }
             }
             .padding(.horizontal, 24).padding(.vertical, 22)
         }
     }
+}
 
+/// Canlıda tembel (yalnız görünen satırlar kurulur), PNG çiziminde (ImageRenderer) düz yığın.
+struct AdaptiveStack<Content: View>: View {
     @Environment(\.snapshotMode) private var snapshot
+    var spacing: CGFloat = 0
+    @ViewBuilder var content: Content
+    var body: some View {
+        if snapshot {
+            VStack(alignment: .leading, spacing: spacing) { content }
+        } else {
+            LazyVStack(alignment: .leading, spacing: spacing) { content }
+        }
+    }
+}
+
+/// "Kırmızılar da seçilecek" onayı. `request` doluyken iletişim kutusu açılır.
+struct SelectRequest: Identifiable {
+    let id = UUID()
+    let items: [CleanItem]
+    let red: Int
+}
+
+extension View {
+    func redSelectDialog(_ request: Binding<SelectRequest?>, model: AppModel) -> some View {
+        confirmationDialog(
+            "\(request.wrappedValue?.red ?? 0) kırmızı öğe de seçilecek (geri gelmeyebilir). Devam?",
+            isPresented: Binding(get: { request.wrappedValue != nil }, set: { if !$0 { request.wrappedValue = nil } }),
+            titleVisibility: .visible, presenting: request.wrappedValue
+        ) { r in
+            Button("Yalnız yeşil ve sarı") { model.selection.selectAll(in: r.items, includeRed: false) }
+            Button("Kırmızılar dahil hepsi", role: .destructive) { model.selection.selectAll(in: r.items, includeRed: true) }
+            Button("Vazgeç", role: .cancel) {}
+        }
+    }
+}
+
+/// Toplu seçim isteği: kırmızı yoksa doğrudan seçer, varsa onay ister.
+@MainActor
+func requestSelectAll(_ items: [CleanItem], model: AppModel, request: Binding<SelectRequest?>) {
+    let p = model.selection.selectAllPreview(in: items)
+    if p.added == 0 { return }
+    if p.red == 0 { model.selection.selectAll(in: items, includeRed: true) } else {
+        request.wrappedValue = SelectRequest(items: items, red: p.red)
+    }
+}
+
+/// Başlık satırı: yalnız seçim değişince yeniden çizilir (satırlar etkilenmez).
+struct CategoryListHeader: View {
+    let model: AppModel
+    let ui: UIState
+    let items: [CleanItem]
+    @State private var request: SelectRequest?
+    @Environment(\.snapshotMode) private var snapshot
+
+    var body: some View {
+        let nsel = items.reduce(0) { $0 + (model.selection.isSelected($1) ? 1 : 0) }
+        HStack(spacing: 14) {
+            Text("\(items.count) öğe · \(nsel) seçili").foregroundStyle(Theme.fg2)
+            Spacer()
+            sortMenu
+            Button("Tümünü seç") { requestSelectAll(items, model: model, request: $request) }
+                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            if nsel > 0 {
+                Button("Seçimi kaldır") { model.selection.deselectAll(in: items) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            }
+        }
+        .redSelectDialog($request, model: model)
+    }
 
     @ViewBuilder private var sortMenu: some View {
         if snapshot {
             Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down").foregroundStyle(Theme.accent)
-        } else { sortMenuLive }
-    }
-
-    private var sortMenuLive: some View {
-        Menu {
-            Picker("Sırala", selection: Binding(get: { ui.sort }, set: { ui.sort = $0 })) {
-                ForEach(ItemSort.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.inline)
-        } label: {
-            Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down")
-        }
-        .menuStyle(.borderlessButton).fixedSize().foregroundStyle(Theme.accent)
-    }
-
-    @ViewBuilder private var listBody: some View {
-        let its = items
-        let nsel = its.filter { model.selection.isSelected($0) }.count
-        HStack {
-            Text("\(its.count) öğe · \(nsel) seçili").foregroundStyle(Theme.fg2)
-            Spacer()
-            sortMenu
-            if its.contains(where: { model.selection.effective($0).risk == .green && model.selection.isSelectable($0) }) {
-                Button(model.selection.allGreensSelected(in: its) ? "Yeşillerin seçimini kaldır" : "Tüm yeşilleri seç") {
-                    model.selection.toggleGreens(in: its)
+        } else {
+            Menu {
+                Picker("Sırala", selection: Binding(get: { ui.sort }, set: { ui.sort = $0 })) {
+                    ForEach(ItemSort.allCases) { Text($0.title).tag($0) }
                 }
-                .buttonStyle(.plain).foregroundStyle(Theme.accent)
+                .pickerStyle(.inline)
+            } label: {
+                Label("Sırala: \(ui.sort.title)", systemImage: "arrow.up.arrow.down")
             }
+            .menuStyle(.borderlessButton).fixedSize().foregroundStyle(Theme.accent)
         }
+    }
+}
+
+struct CategoryList: View {
+    let model: AppModel
+    let ui: UIState
+    let category: ItemCategory
+
+    var body: some View {
+        let its = model.sortedItems(in: category, by: ui.sort)
+        CategoryListHeader(model: model, ui: ui, items: its)
         if its.isEmpty {
             Banner(symbol: "checkmark.circle", tint: Theme.mute, text: Text("Bu bölümde temizlenecek bir şey kalmadı."))
         } else {
             Panel {
-                VStack(spacing: 0) {
+                AdaptiveStack {
                     ForEach(Array(its.enumerated()), id: \.element.id) { i, item in
                         if i > 0 { Divider().opacity(0.6) }
-                        ItemRow(item: item, selection: model.selection, onToggle: { model.selection.toggle(item) })
+                        ItemRow(item: item, model: model)
                     }
                 }
             }
@@ -83,17 +143,15 @@ struct CategoryView: View {
 
 struct ItemRow: View {
     let item: CleanItem
-    let selection: SelectionState
-    var onToggle: () -> Void
+    let model: AppModel
     @State private var open = false
 
-    private var selectable: Bool { selection.isSelectable(item) }
-    private var on: Bool { selection.isSelected(item) }
-
     var body: some View {
-        let e = ItemExplainer.explain(item)
+        let e = model.explanation(for: item)
+        let selectable = model.selection.isSelectable(item)
+        let on = model.selection.isSelected(item)
         HStack(alignment: .top, spacing: 10) {
-            CheckBox(on: on, enabled: selectable, lockHelp: item.lockReason, action: onToggle).padding(.top, 5)
+            CheckBox(on: on, enabled: selectable, lockHelp: item.lockReason, action: { model.selection.toggle(item) }).padding(.top, 5)
             ItemIcon(item: item)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
@@ -176,13 +234,26 @@ struct RevealButton: View {
     }
 }
 
+/// Uygulama simgeleri yolu başına bir kez okunur (LaunchServices çağrısı pahalı).
+@MainActor
+enum AppIconCache {
+    private static let cache = NSCache<NSString, NSImage>()
+    static func icon(for path: String) -> NSImage? {
+        if let i = cache.object(forKey: path as NSString) { return i }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let i = NSWorkspace.shared.icon(forFile: path)
+        cache.setObject(i, forKey: path as NSString)
+        return i
+    }
+}
+
 struct ItemIcon: View {
     let item: CleanItem
     @Environment(\.snapshotMode) private var snapshot
     var body: some View {
         // PNG çiziminde gerçek uygulama simgesi kullanılmaz (ImageRenderer NSImage ile bozuluyor); harf kutusu çizilir.
-        if item.category == .apps, !snapshot, FileManager.default.fileExists(atPath: item.path) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: item.path)).resizable().frame(width: 32, height: 32)
+        if item.category == .apps, !snapshot, let icon = AppIconCache.icon(for: item.path) {
+            Image(nsImage: icon).resizable().frame(width: 32, height: 32)
         } else if item.category == .apps {
             let letter = String(item.name.first ?? "?").uppercased()
             RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.tint(.apps).gradient).frame(width: 32, height: 32)
@@ -195,9 +266,10 @@ struct ItemIcon: View {
     }
 
     private var symbol: String {
+        // Mükerrerlerde dosya sistemine bakılmaz (satır başına stat yok).
+        if item.category == .duplicates { return "doc.fill" }
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: item.path, isDirectory: &isDir)
-        if item.category == .duplicates { return "doc.fill" }
         if exists { return isDir.boolValue ? "folder.fill" : "doc.fill" }
         return CategoryInfo.info(for: item.category).symbol
     }
@@ -205,28 +277,57 @@ struct ItemIcon: View {
 
 struct DuplicatesBody: View {
     let model: AppModel
+    @State private var request: SelectRequest?
 
     var body: some View {
-        let groups = Summaries.duplicateGroups(model.items)
-        let selected = model.selectedItems.filter { $0.category == .duplicates }
+        // Gruplar tarama başına bir kez hesaplanır; bu gövde seçimi okumaz (onay kutusu tüm sayfayı çizdirmez).
+        let groups = model.duplicateGroups
         Banner(symbol: "doc.on.doc", tint: Theme.mute,
                text: Text("Yalnız içeriği birebir aynı dosyalar listelenir (boyut, ilk 1 MB, tam özet sırasıyla). Yeniden oluşan klasörlerdeki kopyalar kendi bölümlerinde temizlenir. Yalnız iCloud'da duran dosyalar okunmaz, çünkü okumak onları Mac'e indirir."))
-        HStack {
-            Text("\(groups.count) grup (toplam boyuta göre) · seçili kopyalar: ")
-                .foregroundStyle(Theme.fg2)
-            + Text(Fmt.bytes(Summaries.totalBytes(selected))).fontWeight(.semibold)
-            Spacer()
-        }
+        DuplicatesHeader(model: model, groupCount: groups.count, request: $request)
         if groups.isEmpty {
             Banner(symbol: "checkmark.circle", tint: Theme.mute, text: Text("Mükerrer dosya bulunamadı."))
         }
-        ForEach(groups) { g in group(g) }
+        ForEach(groups) { g in DuplicateGroupView(model: model, group: g, request: $request) }
     }
+}
 
-    private func group(_ g: DuplicateGroup) -> some View {
+struct DuplicatesHeader: View {
+    let model: AppModel
+    let groupCount: Int
+    @Binding var request: SelectRequest?
+
+    var body: some View {
+        let all = model.duplicateGroups.flatMap(\.members)
+        let selected = model.selectedItems.filter { $0.category == .duplicates }
+        HStack(spacing: 14) {
+            Text("\(groupCount) grup (toplam boyuta göre) · seçili kopyalar: ")
+                .foregroundStyle(Theme.fg2)
+            + Text(Fmt.bytes(Summaries.totalBytes(selected))).fontWeight(.semibold)
+            Spacer()
+            Button("Bütün fazla kopyaları seç (her gruptan bir kopya kalır)") {
+                requestSelectAll(all, model: model, request: $request)
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            if !selected.isEmpty {
+                Button("Seçimi kaldır") { model.selection.deselectAll(in: all) }
+                    .buttonStyle(.plain).foregroundStyle(Theme.accent)
+            }
+        }
+        .redSelectDialog($request, model: model)
+    }
+}
+
+struct DuplicateGroupView: View {
+    let model: AppModel
+    let group: DuplicateGroup
+    @Binding var request: SelectRequest?
+
+    var body: some View {
+        let g = group
         let first = g.members[0]
         let save = g.perCopyBytes * UInt64(max(0, g.members.count - 1))
-        return Panel {
+        Panel {
             VStack(spacing: 0) {
                 HStack(spacing: 11) {
                     ItemIcon(item: first)
@@ -241,6 +342,10 @@ struct DuplicatesBody: View {
                     if g.untouchable {
                         Pill(text: "Dokunulmaz", color: Theme.mute)
                     } else {
+                        Button("Bu gruptaki fazla kopyaları seç") {
+                            requestSelectAll(g.members, model: model, request: $request)
+                        }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(Theme.accent)
                         Text(save > 0 ? "−" + Fmt.bytes(save) : "—").font(.system(size: 13, weight: .bold)).foregroundStyle(Theme.ok).monospacedDigit()
                     }
                 }

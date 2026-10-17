@@ -22,7 +22,9 @@ public final class AppModel {
     }
 
     public private(set) var phase: Phase = .idle
-    public private(set) var snapshot: ScanSnapshot?
+    public private(set) var snapshot: ScanSnapshot? {
+        didSet { cache.reset() }
+    }
     public var selection = SelectionState()
     public private(set) var progress = ScanProgressState()
     public private(set) var outcome: TrashOutcome?
@@ -38,6 +40,9 @@ public final class AppModel {
     private let now: @Sendable () -> Date
     private let diskProvider: @Sendable () -> DiskInfo?
     private var scanTask: Task<Void, Never>?
+    /// Tarama sonucundan türeyen, seçimden bağımsız hesaplar (gruplar, sıralı liste, açıklamalar). Gözlenmez:
+    /// yalnız `snapshot` değişince sıfırlanır, o da zaten gözlenir.
+    @ObservationIgnored private let cache = DerivedCache()
 
     public init(scanService: any ScanService, trashService: any TrashService,
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -55,6 +60,31 @@ public final class AppModel {
     public var selectedItems: [CleanItem] { selection.selectedItems(in: items) }
     public var selectedBytes: UInt64 { Summaries.totalBytes(selectedItems) }
     public var cleanableBytes: UInt64 { Summaries.cleanableBytes(items, selection: selection) }
+
+    /// Mükerrer gruplar; tarama başına bir kez hesaplanır.
+    public var duplicateGroups: [DuplicateGroup] {
+        if let g = cache.groups { return g }
+        let g = Summaries.duplicateGroups(items)
+        cache.groups = g
+        return g
+    }
+
+    /// Kategori öğeleri, verilen sıralamayla; (kategori, sıralama) başına bir kez hesaplanır.
+    public func sortedItems(in category: ItemCategory, by sort: ItemSort) -> [CleanItem] {
+        let key = "\(category.rawValue)|\(sort.rawValue)"
+        if let v = cache.sorted[key] { return v }
+        let v = sort.sorted(items.filter { $0.category == category })
+        cache.sorted[key] = v
+        return v
+    }
+
+    /// Öğe açıklaması; öğe başına bir kez hesaplanır (yalnız görünen satırlar için).
+    public func explanation(for item: CleanItem) -> ItemExplanation {
+        if let e = cache.explanations[item.id] { return e }
+        let e = ItemExplainer.explain(item)
+        cache.explanations[item.id] = e
+        return e
+    }
 
     public func isStale(at date: Date? = nil) -> Bool {
         guard let s = snapshot else { return true }
@@ -171,4 +201,13 @@ public final class AppModel {
     }
 
     public func clearError() { errorMessage = nil }
+}
+
+/// `AppModel` için tarama sonucundan türeyen önbellek (yalnız ana iş parçacığı).
+@MainActor
+final class DerivedCache {
+    var groups: [DuplicateGroup]?
+    var sorted: [String: [CleanItem]] = [:]
+    var explanations: [String: ItemExplanation] = [:]
+    func reset() { groups = nil; sorted = [:]; explanations = [:] }
 }
