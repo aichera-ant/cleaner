@@ -7,6 +7,7 @@ import SwiftUI
 struct MenuBarContent: View {
     let model: AppModel
     let monitor: BackgroundMonitor
+    let updater: Updater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -23,6 +24,8 @@ struct MenuBarContent: View {
         .disabled(model.phase == .scanning || model.phase == .moving)
         SettingsLink { Text("Ayarlar…") }
             .keyboardShortcut(",")
+        Button("Güncellemeleri denetle…") { updater.checkForUpdates() }
+            .disabled(!updater.canCheckForUpdates)
         Divider()
         Button("Hepp Cleaner'dan çık") { NSApp.terminate(nil) }
             .keyboardShortcut("q")

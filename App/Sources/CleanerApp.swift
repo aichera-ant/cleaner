@@ -11,6 +11,7 @@ struct CleanerApp: App {
     @State private var prefs: BackgroundPreferences
     @State private var monitor: BackgroundMonitor
     @State private var login: LoginItemModel
+    @State private var updater: Updater
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
@@ -27,6 +28,7 @@ struct CleanerApp: App {
         #if DEBUG
         snapshotMode = CommandLine.arguments.contains("--snapshot")
         #endif
+        _updater = State(initialValue: Updater(start: !snapshotMode))
         if !snapshotMode {
             login.bootstrap()
             monitor.start()
@@ -59,9 +61,15 @@ struct CleanerApp: App {
         }
         .defaultSize(width: 1100, height: 720)
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Güncellemeleri denetle…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
+        }
 
         MenuBarExtra(isInserted: $prefs.settings.showInMenuBar) {
-            MenuBarContent(model: model, monitor: monitor)
+            MenuBarContent(model: model, monitor: monitor, updater: updater)
         } label: {
             MenuBarLabel(monitor: monitor)
         }
