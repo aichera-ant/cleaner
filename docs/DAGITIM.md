@@ -76,7 +76,10 @@ CONFIG=Debug scripts/build-app.sh     # --snapshot etkin derleme
     mapped file (non-platform) have different Team IDs" hatasıyla yüklenmiyor (2026-10-18, aynı
     sertifika ve runtime ile imzalı küçük bir `dlopen` deneme aracıyla denendi; entitlement eklenince
     yüklendi ve `DYLD_INSERT_LIBRARIES` yine yok sayıldı). Kalan risk: uygulama kendisi diskten bir
-    kitaplık yüklerse imza denetlenmez; uygulama `dlopen` kullanmıyor.
+    kitaplık yüklerse imza denetlenmez; uygulama `dlopen` kullanmıyor. Ayrıca kitaplık doğrulaması kapalı olduğu
+    için uygulama paketine yazabilen bir süreç `Sparkle.framework` ikilisini değiştirip izinleri devralabilir;
+    `/Applications` altında Uygulama Yönetimi koruması bunu büyük olasılıkla engeller (doğrulanmadı),
+    `~/Applications` gibi korumasız yerde risk büyür. Kalıcı çözüm Developer ID sertifikası (Team ID).
 - Sparkle parçaları Sparkle'ın önerdiği gibi runtime ile imzalanır; `Downloader.xpc` entitlement'ı
   `--preserve-metadata=entitlements` ile korunur. Betik sonunda runtime bayrağı yoksa hata verir.
 - Sürüm `App/project.yml`'da: `MARKETING_VERSION` (görünen, ör. 0.3.0) ve `CURRENT_PROJECT_VERSION`
