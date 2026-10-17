@@ -9,12 +9,46 @@ import SwiftUI
 enum SnapshotRunner {
     static func run(into dir: String) async {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        await renderSettings(into: dir)
         for width in [1100, 800] {
             for name in ["ozet", "onbellekler", "mukerrer", "uygulamalar", "onizleme", "sonuc", "tarama", "izinler", "uygulama-artik"] {
                 let (model, ui) = await prepare(name)
                 render(RootView(model: model, ui: ui, perms: perms(for: name)), width: width, to: "\(dir)/\(name)-\(width).png")
                 model.cancelScan()
             }
+        }
+    }
+
+    private struct SampleNotifier: AlertNotifier {
+        func deliver(_ alert: NotificationAlert) async -> NotifyResult { .delivered }
+    }
+
+    private struct SampleLogin: LoginItemControlling {
+        var status: LoginItemStatus { .requiresApproval }
+        func register() throws {}
+        func unregister() throws {}
+    }
+
+    /// Ayarlar penceresi: gerçek AppKit denetimleri için ekran dışı pencerede çizilir.
+    static func renderSettings(into dir: String) async {
+        let d = UserDefaults(suiteName: "cleaner-snapshot-bg")!
+        d.removePersistentDomain(forName: "cleaner-snapshot-bg")
+        let prefs = BackgroundPreferences(defaults: d)
+        let monitor = BackgroundMonitor(prefs: prefs, notifier: SampleNotifier(), weeklyScan: SampleScanService(), defaults: d)
+        let login = LoginItemModel(controller: SampleLogin(), prefs: prefs, defaults: d)
+        login.refresh()
+        let host = NSHostingView(rootView: SettingsView(prefs: prefs, login: login, monitor: monitor).environment(\.colorScheme, .light))
+        let size = host.fittingSize
+        let win = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+        win.contentView = host
+        win.orderFrontRegardless()
+        try? await Task.sleep(for: .milliseconds(400))
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: "\(dir)/ayarlar.png"))
+            print("yazıldı: \(dir)/ayarlar.png")
         }
     }
 
