@@ -13,3 +13,8 @@ build/
 *.p12
 *.key
 *.pem
+
+# Yerel çalışma belgeleri (depoda yok)
+PLAN.md
+TESPITLER.md
+demo/
