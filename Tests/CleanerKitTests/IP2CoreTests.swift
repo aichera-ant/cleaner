@@ -289,7 +289,7 @@ struct AuthorizationTests {
         let reasons = Dictionary(uniqueKeysWithValues: r.refused.map { ($0.path, $0.reason) })
         #expect(reasons[running.path] == "çalışıyor")
         #expect(reasons[apple.path]?.contains("Apple") == true)
-        #expect(reasons[me.path] == "Cleaner'ın kendisi")
+        #expect(reasons[me.path] == "Hepp Cleaner'ın kendisi")
         #expect(reasons[nested.path]?.contains("doğrudan çocuğu değil") == true)
         #expect(reasons[link.path]?.contains("sembolik") == true)
         #expect(reasons[blocked.path]?.contains("başka kullanıcı") == true)

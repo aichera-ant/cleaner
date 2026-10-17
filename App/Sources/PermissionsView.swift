@@ -14,7 +14,7 @@ struct PermissionsSheet: View {
                     CategoryTile(tint: Theme.accent, symbol: "lock.shield", size: 42)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("İzinler").font(.system(size: 17, weight: .bold, design: .rounded))
-                        Text("Hiçbiri zorunlu değil. Cleaner izinsiz de çalışır; yalnız ilgili işler yapılamaz.")
+                        Text("Hiçbiri zorunlu değil. Hepp Cleaner izinsiz de çalışır; yalnız ilgili işler yapılamaz.")
                             .foregroundStyle(Theme.fg2).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -64,7 +64,7 @@ struct PermissionsSheet: View {
             }
             if opened.contains(kind) {
                 Text(kind == .fullDiskAccess
-                     ? "İzni verdikten sonra Cleaner'ı kapatıp yeniden açman gerekebilir."
+                     ? "İzni verdikten sonra Hepp Cleaner'ı kapatıp yeniden açman gerekebilir."
                      : "İzni verdikten sonra bu ekrana dön; durum kendiliğinden yenilenir.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.accent)
             }

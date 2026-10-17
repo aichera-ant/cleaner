@@ -154,7 +154,7 @@ struct WelcomeView: View {
             Spacer()
             CategoryTile(tint: Theme.accent, symbol: "sparkles", size: 64)
             Text("Diskini tara").font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Cleaner önce yalnız bakar: hiçbir şeyi silmez, değiştirmez. Taramadan sonra neyin gideceğini sen seçersin; seçilenler Çöp Kutusu'na taşınır.")
+            Text("Hepp Cleaner önce yalnız bakar: hiçbir şeyi silmez, değiştirmez. Taramadan sonra neyin gideceğini sen seçersin; seçilenler Çöp Kutusu'na taşınır.")
                 .multilineTextAlignment(.center).foregroundStyle(Theme.fg2).frame(maxWidth: 440)
             if let disk = model.disk {
                 Text("Boş alan: \(Fmt.bytes(disk.availableBytes)) / \(Fmt.bytes(disk.totalBytes))")

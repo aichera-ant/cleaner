@@ -365,11 +365,11 @@ public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
         case .userCancelled:
             return "yetki penceresi iptal edildi; öğe taşınmadı"
         case .automationDenied:
-            return "Cleaner'ın Finder'ı kullanma izni yok. Sistem Ayarları → Gizlilik ve Güvenlik → Otomasyon → "
-                + "Cleaner → Finder iznini açıp yeniden deneyin"
+            return "Hepp Cleaner'ın Finder'ı kullanma izni yok. Sistem Ayarları → Gizlilik ve Güvenlik → Otomasyon → "
+                + "Hepp Cleaner → Finder iznini açıp yeniden deneyin"
         case .automationConsentRequired:
-            return "Cleaner'ın Finder'ı kullanması için onayınız gerekiyor (izin penceresi gösterilemedi). Sistem Ayarları → "
-                + "Gizlilik ve Güvenlik → Otomasyon → Cleaner → Finder iznini açıp yeniden deneyin"
+            return "Hepp Cleaner'ın Finder'ı kullanması için onayınız gerekiyor (izin penceresi gösterilemedi). Sistem Ayarları → "
+                + "Gizlilik ve Güvenlik → Otomasyon → Hepp Cleaner → Finder iznini açıp yeniden deneyin"
         case .waitCancelled:
             return "Finder'ın yanıtı beklenirken işlem iptal edildi; öğe taşınmamış olabilir, yeniden tarayın"
         case .timedOut:

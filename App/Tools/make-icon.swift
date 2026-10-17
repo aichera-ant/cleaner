@@ -1,9 +1,17 @@
-// Uygulama simgesi üretici: `swift App/Tools/make-icon.swift App/Resources/Assets.xcassets/AppIcon.appiconset`
-// Yeşil-turkuaz degrade zemin üzerinde beyaz süpürge/parıltı (SF Symbol "sparkles").
+// Uygulama simgesi üretici (SVG'den):
+//   swift App/Tools/make-icon.swift App/Resources/Logo/hepp-cleaner-a.svg App/Resources/Assets.xcassets/AppIcon.appiconset
+// Logo SVG'si (viewBox 120, yuvarlatılmış kare 2..118) macOS simge kılavuzuna göre 1024 tuvalde ~824 px kareye oturtulur.
 import AppKit
 
-let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "."
+let args = CommandLine.arguments
+guard args.count >= 3, let svg = NSImage(contentsOf: URL(fileURLWithPath: args[1])) else {
+    FileHandle.standardError.write(Data("kullanım: make-icon.swift <logo.svg> <AppIcon.appiconset>\n".utf8))
+    exit(1)
+}
+let out = args[2]
 let sizes: [(Int, Int)] = [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2), (256, 1), (256, 2), (512, 1), (512, 2)]
+/// SVG'deki kare 116/120 oranında; 824/1024 hedefi için görüntü tuvalin bu oranı kadarı olur.
+let imageScale = (824.0 / 1024.0) * (120.0 / 116.0)
 
 func render(px: Int) -> Data {
     let s = CGFloat(px)
@@ -11,23 +19,9 @@ func render(px: Int) -> Data {
                                hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    let inset = s * 0.06
-    let rect = NSRect(x: inset, y: inset, width: s - inset * 2, height: s - inset * 2)
-    let path = NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.225, yRadius: rect.width * 0.225)
-    NSGradient(colors: [NSColor(srgbRed: 0.36, green: 0.89, blue: 0.71, alpha: 1),
-                        NSColor(srgbRed: 0.09, green: 0.64, blue: 0.54, alpha: 1),
-                        NSColor(srgbRed: 0.04, green: 0.43, blue: 0.47, alpha: 1)])!.draw(in: path, angle: -60)
-    let cfg = NSImage.SymbolConfiguration(pointSize: s * 0.5, weight: .semibold)
-    if let sym = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
-        let tinted = NSImage(size: sym.size, flipped: false) { r in
-            sym.draw(in: r)
-            NSColor.white.set()
-            r.fill(using: .sourceAtop)
-            return true
-        }
-        let w = tinted.size.width, h = tinted.size.height
-        tinted.draw(in: NSRect(x: (s - w) / 2, y: (s - h) / 2, width: w, height: h))
-    }
+    NSGraphicsContext.current?.imageInterpolation = .high
+    let side = s * imageScale
+    svg.draw(in: NSRect(x: (s - side) / 2, y: (s - side) / 2, width: side, height: side))
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }

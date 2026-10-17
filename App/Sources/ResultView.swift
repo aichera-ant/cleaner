@@ -69,9 +69,9 @@ struct ResultView: View {
         let granted = perms.status(.fullDiskAccess) == .granted
         let text = granted
             ? "Bazı öğeler macOS uygulama verisi koruması yüzünden taşınamadı. Tam Disk Erişimi verilmiş görünüyor; "
-                + "Cleaner yeniden derlendiyse izin kaybolmuş olabilir. Ayarlardan kapatıp açın, sonra Cleaner'ı yeniden başlatın."
-            : "Bazı öğeler macOS uygulama verisi koruması yüzünden taşınamadı: Cleaner'ın Tam Disk Erişimi yok. "
-                + "İzni verip Cleaner'ı yeniden başlattıktan sonra yeniden tarayın."
+                + "Hepp Cleaner yeniden derlendiyse izin kaybolmuş olabilir. Ayarlardan kapatıp açın, sonra Hepp Cleaner'ı yeniden başlatın."
+            : "Bazı öğeler macOS uygulama verisi koruması yüzünden taşınamadı: Hepp Cleaner'ın Tam Disk Erişimi yok. "
+                + "İzni verip Hepp Cleaner'ı yeniden başlattıktan sonra yeniden tarayın."
         return Banner(symbol: "lock.shield", tint: Theme.bad, text: Text(text)) {
             Button("Tam Disk Erişimi'ni aç") {
                 if let url = URL(string: PermissionKind.fullDiskAccess.settingsURL) { NSWorkspace.shared.open(url) }

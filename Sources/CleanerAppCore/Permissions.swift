@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Cleaner'ın isteyebileceği üç macOS izni. Hiçbiri zorunlu değil.
+/// Hepp Cleaner'ın isteyebileceği üç macOS izni. Hiçbiri zorunlu değil.
 public enum PermissionKind: String, CaseIterable, Sendable, Identifiable {
     case fullDiskAccess
     case appManagement

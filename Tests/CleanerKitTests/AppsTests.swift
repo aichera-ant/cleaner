@@ -242,7 +242,7 @@ struct AppTrasherTests {
         #expect(r.done.allSatisfy { $0.detail?.contains("FakeTrash") == true })
     }
 
-    @Test("Apple, çalışan (yol, bundle id, ad), Cleaner'ın kendisi reddedilir")
+    @Test("Apple, çalışan (yol, bundle id, ad), Hepp Cleaner'ın kendisi reddedilir")
     func refusals() async throws {
         let t = try TempTree()
         let (apps, p) = try AppFixture.setup(t)
@@ -270,8 +270,8 @@ struct AppTrasherTests {
         let reasons = Dictionary(uniqueKeysWithValues: r.refused.map { ($0.path, $0.reason) })
         #expect(reasons[appleApp.path]?.contains("Apple") == true)
         for u in [runPath, runID, copy, runName] { #expect(reasons[u.path] == "çalışıyor", "\(u.path): \(reasons[u.path] ?? "-")") }
-        #expect(reasons[me.path] == "Cleaner'ın kendisi")
-        #expect(reasons[meByID.path] == "Cleaner'ın kendisi")
+        #expect(reasons[me.path] == "Hepp Cleaner'ın kendisi")
+        #expect(reasons[meByID.path] == "Hepp Cleaner'ın kendisi")
         for u in targets { #expect(t.exists(u)) }
     }
 

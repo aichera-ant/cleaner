@@ -12,7 +12,7 @@ struct SettingsView: View {
         Form {
             SwiftUI.Section("Genel") {
                 Toggle("Menü çubuğunda boş alanı göster", isOn: $prefs.settings.showInMenuBar)
-                Toggle("Mac açılınca Cleaner'ı başlat", isOn: Binding(
+                Toggle("Mac açılınca Hepp Cleaner'ı başlat", isOn: Binding(
                     get: { prefs.settings.launchAtLogin },
                     set: { prefs.settings.launchAtLogin = $0; login.setEnabled($0) }))
                 if let m = login.message {
@@ -77,7 +77,7 @@ struct LoginNoticeBar: View {
 
     var body: some View {
         if login.showFirstRunNotice {
-            Banner(symbol: "power", text: Text("Cleaner Mac açılınca kendiliğinden başlayacak ve menü çubuğunda boş alanı gösterecek. Ayarlar'dan kapatabilirsin."), trailing: {
+            Banner(symbol: "power", text: Text("Hepp Cleaner Mac açılınca kendiliğinden başlayacak ve menü çubuğunda boş alanı gösterecek. Ayarlar'dan kapatabilirsin."), trailing: {
                 HStack(spacing: 10) {
                     Button("Ayarlar") { openSettings(); login.dismissNotice() }
                     Button("Tamam") { login.dismissNotice() }.buttonStyle(.borderedProminent)

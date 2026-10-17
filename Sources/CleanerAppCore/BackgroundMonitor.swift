@@ -66,7 +66,7 @@ public final class BackgroundMonitor {
     }
 
     /// Menü çubuğu etiketi.
-    public var menuTitle: String { disk.map { Fmt.shortBytes($0.availableBytes) } ?? "Cleaner" }
+    public var menuTitle: String { disk.map { Fmt.shortBytes($0.availableBytes) } ?? "Hepp Cleaner" }
 
     // MARK: Zamanlama
 

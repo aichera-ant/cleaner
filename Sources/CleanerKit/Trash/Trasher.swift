@@ -52,7 +52,7 @@ public struct TrashReport: Codable, Sendable {
 /// var olmayan yol. Varsayılan dry-run: hiçbir şey taşınmaz, yalnız rapor üretilir.
 ///
 /// Uygulama istisnası (`apps` kategorisi): `PathPolicy.appBundleRejectionReason` + Apple (`com.apple.*`) değil
-/// + Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile).
+/// + Hepp Cleaner'ın kendisi değil + çalışmıyor (yol, bundle id ya da ad ile).
 /// Komut satırı bağlantısı ve yakın kullanım taşıma engeli değildir (tarayıcıda uyarıdır, karar kullanıcıda);
 /// "çalışıyor" kontrolü ise taşıma anında her zaman yeniden yapılır.
 ///
@@ -60,7 +60,7 @@ public struct TrashReport: Codable, Sendable {
 /// uygulaması seçilmeden de taşınabilir. Taşıma anında yeniden doğrulanır: kesin artık
 /// `PathPolicy.leftoverRejectionReason`, ad tabanlı `PathPolicy.nameLeftoverRejectionReason` (doğrudan çocuk,
 /// bağlantı değil, izinli kökte) + başka kurulu uygulamayla çakışma yok; ikisinde de uygulama öğesi aynı taramada
-/// olmalı, paketi hâlâ duruyorsa bundle id'si aynı olmalı, uygulama çalışmıyor ve Cleaner değil, aynı bundle id'li
+/// olmalı, paketi hâlâ duruyorsa bundle id'si aynı olmalı, uygulama çalışmıyor ve Hepp Cleaner değil, aynı bundle id'li
 /// başka kopya kurulu değil. Uygulama öğesi bu çalıştırmada seçilip taşınamadıysa (ret ya da hata, ör. parola
 /// iptali) bağlı artıkları "uygulama taşınamadığı için atlandı" diye reddedilir. Artıklar uygulamalardan sonra işlenir.
 ///
@@ -84,7 +84,7 @@ public struct Trasher: Sendable {
     let recycler: any Recycling
     /// Yetkili taşıyıcı (yalnız `needsAuthorization` uygulama paketi için). nil: bu öğeler reddedilir.
     let privilegedRecycler: (any Recycling)?
-    /// Cleaner'ın kendi çalıştırılabilir dosyası ve bundle id'si: kendi paketini taşımasın.
+    /// Hepp Cleaner'ın kendi çalıştırılabilir dosyası ve bundle id'si: kendi paketini taşımasın.
     let selfExecutable: URL?
     let selfBundleID: String?
 
@@ -131,7 +131,7 @@ public struct Trasher: Sendable {
 
     static let appFailedSkip = "uygulama taşınamadığı için atlandı"
 
-    static let authorizationRefusal = "Uygulama Yönetimi koruması: Cleaner uygulamasından kaldırın"
+    static let authorizationRefusal = "Uygulama Yönetimi koruması: Hepp Cleaner uygulamasından kaldırın"
 
     /// Öğe neden reddedilir? Reddedilmiyorsa nil.
     public func rejectionReason(for item: CleanItem) -> String? {
@@ -237,7 +237,7 @@ public struct Trasher: Sendable {
     }
 
     /// Artığın uygulamaya göre kontrolü (taşıma anında): uygulama öğesi taramada, paket duruyorsa aynı bundle id,
-    /// çalışmıyor, Cleaner değil, aynı bundle id'li başka kopya yok, ad tabanlıda başka kurulu uygulamayla ya da
+    /// çalışmıyor, Hepp Cleaner değil, aynı bundle id'li başka kopya yok, ad tabanlıda başka kurulu uygulamayla ya da
     /// (ana klasörde) komut satırı aracıyla çakışma yok. `env` nil ise yeniden okunur.
     func leftoverParentRejection(_ item: CleanItem, parent: CleanItem?, env: LeftoverEnvironment? = nil) -> String? {
         guard let parent, parent.id == item.parentAppID, parent.category == .apps, !parent.isLeftover,
@@ -255,13 +255,13 @@ public struct Trasher: Sendable {
             if procs.running.isRunning(bundle: parent.url, bundleID: bundleID) || procs.isRunning(name: info.name) {
                 return "artık: uygulama çalışıyor"
             }
-            if isSelf(bundle: parent.url, bundleID: bundleID) { return "artık: Cleaner'ın kendisi" }
+            if isSelf(bundle: parent.url, bundleID: bundleID) { return "artık: Hepp Cleaner'ın kendisi" }
         } else {
             // Uygulama bu arada kaldırılmış: artık sahipsiz; yine de aynı kimlikle çalışan süreç olmamalı.
             if procs.running.isRunning(bundle: parent.url, bundleID: bundleID) || procs.isRunning(name: parent.name) {
                 return "artık: uygulama çalışıyor"
             }
-            if let selfBundleID, selfBundleID.lowercased() == bundleID.lowercased() { return "artık: Cleaner'ın kendisi" }
+            if let selfBundleID, selfBundleID.lowercased() == bundleID.lowercased() { return "artık: Hepp Cleaner'ın kendisi" }
         }
         if env.installed.hasOther(bundleID: bundleID, excludingBundleKey: parentKey) {
             return "artık: aynı bundle id'li başka kopya kurulu; artıklar ortak"
@@ -351,7 +351,7 @@ public struct Trasher: Sendable {
 
     private func appInfoRejectionReason(for item: CleanItem, info: AppBundleInfo, reader: SafeReader) -> String? {
         if info.isApple { return "Apple sistem uygulaması" }
-        if isSelf(bundle: item.url, bundleID: info.bundleID) { return "Cleaner'ın kendisi" }
+        if isSelf(bundle: item.url, bundleID: info.bundleID) { return "Hepp Cleaner'ın kendisi" }
         let running = RunningApps(processes: processes.runningProcesses(), reader: reader)
         if running.isRunning(bundle: item.url, bundleID: info.bundleID) || processes.isRunning(info.name) {
             return "çalışıyor"
@@ -374,7 +374,7 @@ public struct Trasher: Sendable {
     public static let fullDiskAccessMarker = "Tam Disk Erişimi gerekir"
 
     static let fullDiskAccessRefusal = "\(fullDiskAccessMarker) (macOS uygulama verisi koruması; parola değil): "
-        + "Sistem Ayarları → Gizlilik ve Güvenlik → Tam Disk Erişimi'nde Cleaner'ı açıp yeniden deneyin"
+        + "Sistem Ayarları → Gizlilik ve Güvenlik → Tam Disk Erişimi'nde Hepp Cleaner'ı açıp yeniden deneyin"
 
     /// macOS'un uygulama verisi / gizlilik korumasındaki (TCC) ana klasör yolları: buradaki EPERM yönetici
     /// parolasıyla değil, Tam Disk Erişimi ile aşılır. Ana klasöre göreli.
@@ -632,7 +632,7 @@ public struct Trasher: Sendable {
     enum Outcome { case done, failed, needsPrivileged }
 
     static let appManagementRefusal = "macOS Uygulama Yönetimi engelledi: Sistem Ayarları → Gizlilik ve Güvenlik → "
-        + "Uygulama Yönetimi'nde Cleaner'a izin ver ya da Cleaner uygulamasından kaldır"
+        + "Uygulama Yönetimi'nde Hepp Cleaner'a izin ver ya da Hepp Cleaner uygulamasından kaldır"
 
     /// İzin hatası mı (EPERM/EACCES, Cocoa yazma izni yok)?
     static func isPermissionError(_ error: any Error) -> Bool {
