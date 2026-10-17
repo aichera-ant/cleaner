@@ -5,3 +5,5 @@
 *.xcworkspace/xcuserdata/
 DerivedData/
 Package.resolved.bak
+build/
+*.xcodeproj
