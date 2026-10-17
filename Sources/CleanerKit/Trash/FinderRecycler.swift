@@ -21,36 +21,55 @@ public struct FinderRecycler: Recycling {
     typealias Sender = @Sendable (_ url: URL, _ timeout: TimeInterval) throws -> URL?
     /// Toplu olayı (tek `core/delo`, doğrudan nesne `typeAEList`) gönderir. Hata `FinderRecycleError` olmalıdır.
     typealias BatchSender = @Sendable (_ urls: [URL], _ timeout: TimeInterval) throws -> Void
+    /// Bekleme (yedekten önce toplu olayın geç bitmesine pay). Testte anında döner.
+    typealias Sleeper = @Sendable (_ duration: Duration) async -> Void
+
+    /// Toplu olaydan sonra öğe yerindeyse yedekten önce kaç kez beklenip yeniden `lstat` yapılır (adım başına
+    /// `settleStep`; en çok ~1,5 sn). Finder toplu olayı geç bitirdiyse ikinci parola penceresi açılmasın diye.
+    static let settlePolls = 3
+    static let settleStep: Duration = .milliseconds(500)
 
     let timeout: TimeInterval
     let sender: Sender
     let batchSender: BatchSender
+    let sleeper: Sleeper
 
     public init(timeout: TimeInterval = FinderRecycler.defaultTimeout) {
         self.timeout = timeout
         self.sender = FinderRecycler.sendDeleteEvent
         self.batchSender = FinderRecycler.sendBatchDeleteEvent
+        self.sleeper = { d in try? await Task.sleep(for: d) }
     }
 
-    /// Test için: gerçek Apple Event yerine sahte gönderici(ler).
+    /// Test için: gerçek Apple Event yerine sahte gönderici(ler); bekleme varsayılan olarak anında döner.
     init(timeout: TimeInterval = FinderRecycler.defaultTimeout, sender: @escaping Sender,
-         batchSender: BatchSender? = nil) {
+         batchSender: BatchSender? = nil, sleeper: Sleeper? = nil) {
         self.timeout = timeout
         self.sender = sender
         self.batchSender = batchSender ?? { urls, t in for u in urls { _ = try sender(u, t) } }
+        self.sleeper = sleeper ?? { _ in }
+    }
+
+    public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
+        await recycle(urls, revalidate: { _ in nil })
     }
 
     /// Birden çok yolu taşır.
     ///
-    /// - Tek öğe: doğrudan TEK öğeli olay (gerçek Finder'la doğrulanmış biçim; toplu liste gönderilmez).
+    /// - Tek öğe: doğrudan TEK öğeli olay (gerçek Finder'la doğrulanmış biçim; toplu liste gönderilmez). Olay hata
+    ///   dönse bile öğe yerinden kalktıysa başarılıdır (konum nil).
     /// - Birden çok öğe: önce TEK toplu olay (Finder bir kez parola/Touch ID ister). Olaydan sonra her kaynak ayrı
     ///   ayrı `lstat` ile doğrulanır: kalkan başarılı (konum nil). Olay hata dönse bile (Finder bir kısmını taşımış
     ///   olabilir) kalkan başarılıdır.
     /// - Yerinde kalanlar: toplu olay başarı dediği hâlde öğe duruyorsa (`stillExists`) ya da Finder genel bir hata
-    ///   döndüyse (`finderFailed`) kalan her öğe için TEK öğeli olaya sırayla yedek düşülür (her biri ayrı parola
-    ///   isteyebilir). Kullanıcı iptali, Otomasyon izni yok, Finder'a ulaşılamadı ve zaman aşımında yedek
-    ///   denenmez (kullanıcıya yeniden sorulmaz); yedek sırasında bunlardan biri gelirse kalanlar da o hatayla biter.
-    public func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>] {
+    ///   döndüyse (`finderFailed`) önce kısa beklenip (`settlePolls` × `settleStep`) yeniden `lstat` yapılır; hâlâ
+    ///   duran her öğe `revalidate` ile yeniden doğrulanır (nil değilse ret nedeni: öğe Finder'a gitmez) ve TEK öğeli
+    ///   olaya sırayla yedek düşülür (her biri ayrı parola isteyebilir). Tek öğeli olay hata dönse bile öğe kalktıysa
+    ///   başarılıdır. Kullanıcı iptali, Otomasyon izni yok/onay gerekli, bekleme iptali, Finder'a ulaşılamadı ve zaman
+    ///   aşımında yedek denenmez (kullanıcıya yeniden sorulmaz); yedek sırasında bunlardan biri gelirse kalanlar da o
+    ///   hatayla biter.
+    public func recycle(_ urls: [URL], revalidate: @escaping @Sendable (URL) -> String?) async
+        -> [URL: Result<URL?, any Error>] {
         guard !urls.isEmpty else { return [:] }
         let log = TrashLog.logger
         if urls.count == 1 {
@@ -75,14 +94,18 @@ public struct FinderRecycler: Recycling {
         }
         var out: [URL: Result<URL?, any Error>] = [:]
         var remaining: [URL] = []
-        for u in urls {
-            if Self.itemExists(at: u) {
-                remaining.append(u)
-            } else {
-                out[u] = .success(nil)
-                log.info("Finder (toplu): taşındı \(u.path, privacy: .public)")
+        func sweep(_ candidates: [URL]) {
+            remaining = []
+            for u in candidates {
+                if Self.itemExists(at: u) {
+                    remaining.append(u)
+                } else {
+                    out[u] = .success(nil)
+                    log.info("Finder (toplu): taşındı \(u.path, privacy: .public)")
+                }
             }
         }
+        sweep(urls)
         guard !remaining.isEmpty else { return out }
         let batchError = failure ?? FinderRecycleError.stillExists
         guard Self.fallsBackToSingle(after: batchError) else {
@@ -92,12 +115,25 @@ public struct FinderRecycler: Recycling {
             }
             return out
         }
+        // Finder toplu olayı geç bitirmiş olabilir: kısa bekleyip yeniden bak (ikinci parola penceresi açılmasın).
+        for _ in 0..<Self.settlePolls where !remaining.isEmpty {
+            await sleeper(Self.settleStep)
+            sweep(remaining)
+        }
+        guard !remaining.isEmpty else { return out }
         log.notice("Finder toplu olayından sonra \(remaining.count, privacy: .public) öğe yerinde; tek öğeli olaya yedek düşülüyor")
         var stop: FinderRecycleError?
         for u in remaining {
             if let stop {
                 out[u] = .failure(stop)
                 log.error("Finder (yedek): denenmedi \(u.path, privacy: .public): \(stop.logText, privacy: .public)")
+                continue
+            }
+            // Yedek olaydan hemen önce yol yeniden doğrulanır (toplu olaydan bu yana durum değişmiş olabilir).
+            if let reason = revalidate(u) {
+                let e = FinderRecycleError.revalidationFailed(reason)
+                out[u] = .failure(e)
+                log.error("Finder (yedek): yeniden doğrulamada reddedildi \(u.path, privacy: .public): \(reason, privacy: .public)")
                 continue
             }
             do {
@@ -115,7 +151,8 @@ public struct FinderRecycler: Recycling {
     static func fallsBackToSingle(after error: FinderRecycleError) -> Bool {
         switch error {
         case .stillExists, .finderFailed: true
-        case .userCancelled, .automationDenied, .finderUnavailable, .timedOut: false
+        case .userCancelled, .automationDenied, .automationConsentRequired, .waitCancelled, .finderUnavailable,
+             .timedOut, .revalidationFailed: false
         }
     }
 
@@ -142,6 +179,11 @@ public struct FinderRecycler: Recycling {
             }
         } catch {
             let e = Self.mapThrown(error)
+            // Olay hata dönse bile öğe yerinden kalktıysa başarı sayılır (toplu yoldaki kural; konum bilinmez).
+            if !Self.itemExists(at: url) {
+                log.notice("Finder hata döndü (kod \(e.code ?? 0, privacy: .public)) ama öğe kalktı: \(url.path, privacy: .public)")
+                return nil
+            }
             log.error("Finder: reddedildi \(url.path, privacy: .public): kod \(e.code ?? 0, privacy: .public), \(e.logText, privacy: .public)")
             throw e
         }
@@ -203,8 +245,12 @@ public struct FinderRecycler: Recycling {
         switch code {
         case Int(userCanceledErr): // -128
             return .userCancelled
-        case Int(errAEEventNotPermitted), Int(errAEEventWouldRequireUserConsent): // -1743, -1744
+        case Int(errAEEventNotPermitted): // -1743
             return .automationDenied
+        case Int(errAEEventWouldRequireUserConsent): // -1744
+            return .automationConsentRequired
+        case Int(errAEWaitCanceled): // -1711
+            return .waitCancelled
         case Int(errAETimeout): // -1712
             return .timedOut
         case Int(procNotFound), Int(connectionInvalid): // -600, -609
@@ -280,20 +326,28 @@ public struct FinderRecycler: Recycling {
 public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
     case userCancelled
     case automationDenied
+    /// -1744: olay kullanıcı onayı gerektiriyor (Otomasyon izni henüz sorulmadı/verilmedi).
+    case automationConsentRequired
+    /// -1711: yanıt beklenirken bekleme iptal edildi.
+    case waitCancelled
     case timedOut
     case finderUnavailable
     case finderFailed(code: Int, message: String?)
     case stillExists
+    /// Yedek tek öğeli olaydan önce yeniden doğrulamada reddedildi (öğe Finder'a gönderilmedi).
+    case revalidationFailed(String)
 
     /// Apple Event / OSStatus hata kodu (biliniyorsa).
     public var code: Int? {
         switch self {
         case .userCancelled: -128
         case .automationDenied: -1743
+        case .automationConsentRequired: -1744
+        case .waitCancelled: -1711
         case .timedOut: -1712
         case .finderUnavailable: -600
         case .finderFailed(let code, _): code
-        case .stillExists: nil
+        case .stillExists, .revalidationFailed: nil
         }
     }
 
@@ -313,6 +367,11 @@ public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
         case .automationDenied:
             return "Cleaner'ın Finder'ı kullanma izni yok. Sistem Ayarları → Gizlilik ve Güvenlik → Otomasyon → "
                 + "Cleaner → Finder iznini açıp yeniden deneyin"
+        case .automationConsentRequired:
+            return "Cleaner'ın Finder'ı kullanması için onayınız gerekiyor (izin penceresi gösterilemedi). Sistem Ayarları → "
+                + "Gizlilik ve Güvenlik → Otomasyon → Cleaner → Finder iznini açıp yeniden deneyin"
+        case .waitCancelled:
+            return "Finder'ın yanıtı beklenirken işlem iptal edildi; öğe taşınmamış olabilir, yeniden tarayın"
         case .timedOut:
             return "Finder zamanında yanıt vermedi (zaman aşımı); öğe taşınmamış olabilir, yeniden tarayın"
         case .finderUnavailable:
@@ -323,6 +382,8 @@ public enum FinderRecycleError: Error, Equatable, LocalizedError, Sendable {
             return base
         case .stillExists:
             return "Finder işlemi bitirdi ama öğe hâlâ yerinde; taşınmış sayılmadı"
+        case .revalidationFailed(let reason):
+            return "yeniden denemeden önceki denetimde reddedildi: \(reason)"
         }
     }
 

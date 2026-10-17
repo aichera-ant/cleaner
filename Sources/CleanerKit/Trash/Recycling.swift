@@ -8,6 +8,9 @@ public protocol Recycling: Sendable {
     /// Birden çok yolu tek seferde taşır (yetkili taşıyıcıda tek parola). Sonuç her verilen URL için
     /// (verildiği haliyle anahtar) başarı (Çöp Kutusu'ndaki konum, bilinmiyorsa nil) ya da hata.
     func recycle(_ urls: [URL]) async -> [URL: Result<URL?, any Error>]
+    /// Toplu taşıma; ilk denemeden SONRA yapılan her ek deneme (ör. Finder'ın tek öğeli yedek olayı) öncesinde
+    /// `revalidate` çağrılır: nil değilse dönen neden ret nedenidir, öğe yeniden denenmez.
+    func recycle(_ urls: [URL], revalidate: @escaping @Sendable (URL) -> String?) async -> [URL: Result<URL?, any Error>]
 }
 
 extension Recycling {
@@ -18,6 +21,12 @@ extension Recycling {
             do { out[u] = .success(try await recycle(u)) } catch { out[u] = .failure(error) }
         }
         return out
+    }
+
+    /// Varsayılan: ek deneme yapılmaz, `recycle(_: [URL])`'e verilir (yeniden doğrulama gerekmez).
+    public func recycle(_ urls: [URL], revalidate: @escaping @Sendable (URL) -> String?) async
+        -> [URL: Result<URL?, any Error>] {
+        await recycle(urls)
     }
 }
 

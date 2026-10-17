@@ -213,7 +213,7 @@ struct StandaloneCLIFolderTests {
         #expect(LeftoverNames.isStandaloneCLIFolder(b))
     }
 
-    @Test("bağımsız değil: bin yok, bin boş ya da çalıştırılamaz dosya, bin bağlantı, uygulama paketine bağlantı, kırık bağlantı")
+    @Test("bağımsız değil: bin yok, bin boş ya da çalıştırılamaz dosya, bin dışarıya bağlantı, uygulama paketine bağlantı, kırık bağlantı")
     func notStandalone() throws {
         let t = try TempTree()
         let (apps, _) = try AppFixture.setup(t)
@@ -225,7 +225,7 @@ struct StandaloneCLIFolderTests {
         #expect(!LeftoverNames.isStandaloneCLIFolder(empty.deletingLastPathComponent()))
         try t.file(".plain/bin/readme.txt")
         #expect(!LeftoverNames.isStandaloneCLIFolder(t.home.appending(path: ".plain")))
-        // bin'in kendisi bağlantı.
+        // bin'in kendisi klasör dışına giden bağlantı (içeri giden bağlantı bağımsız sayılır: ayrı test).
         let realBin = try t.dir("elsewhere/bin")
         try exe(t, "elsewhere/bin/tool")
         let linked = try t.dir(".linked")
@@ -239,6 +239,33 @@ struct StandaloneCLIFolderTests {
         try FileManager.default.createSymbolicLink(at: own.appending(path: "broken"),
                                                    withDestinationURL: t.root.appending(path: "yok"))
         #expect(!LeftoverNames.isStandaloneCLIFolder(own.deletingLastPathComponent()))
+    }
+
+    @Test("bin aynı klasörün içine bağlantı (versions/current/bin): gerçek klasör izlenir, bağımsız CLI; dışarıya ya da kendine giden değil")
+    func binLinkInside() throws {
+        let t = try TempTree()
+        let v = try t.dir(".toolv")
+        try exe(t, ".toolv/versions/1.2/bin/toolv")
+        try FileManager.default.createSymbolicLink(atPath: v.appending(path: "versions/current").path,
+                                                   withDestinationPath: "1.2")
+        try FileManager.default.createSymbolicLink(atPath: v.appending(path: "bin").path,
+                                                   withDestinationPath: "versions/current/bin")
+        #expect(LeftoverNames.isStandaloneCLIFolder(v))
+        // İçeri giden ama içinde çalıştırılabilir olmayan bin: bağımsız değil.
+        let e = try t.dir(".toole")
+        try t.file(".toole/versions/1/bin/readme.txt")
+        try FileManager.default.createSymbolicLink(atPath: e.appending(path: "bin").path, withDestinationPath: "versions/1/bin")
+        #expect(!LeftoverNames.isStandaloneCLIFolder(e))
+        // Dışarıya (komşu ~/.<y>) giden göreli bağlantı: bağımsız değil.
+        try exe(t, ".other/bin/tool")
+        let out = try t.dir(".toolo")
+        try FileManager.default.createSymbolicLink(atPath: out.appending(path: "bin").path, withDestinationPath: "../.other/bin")
+        #expect(!LeftoverNames.isStandaloneCLIFolder(out))
+        // Klasörün kendisine giden bağlantı (bin -> .): bağımsız değil.
+        let selfLink = try t.dir(".tools")
+        try exe(t, ".tools/tool")
+        try FileManager.default.createSymbolicLink(atPath: selfLink.appending(path: "bin").path, withDestinationPath: ".")
+        #expect(!LeftoverNames.isStandaloneCLIFolder(selfLink))
     }
 
     @Test("uygulamanın kendi CLI'ı ~/.<x>/bin içinde paket içine bağlantıysa: aday, kırmızı ve notlu (iç komut kuralı)")
@@ -315,5 +342,197 @@ struct IP3SmallNotesTests {
         #expect(Trasher.notesInternalCommands(noted.note, ["zeplin"]))
         #expect(!Trasher.notesInternalCommands(noted.note, ["zeplin", "other"]))
         #expect(moved.n == 0)
+    }
+}
+
+/// Değişebilen süreç listesi (taşıma sırasında uygulama açılması).
+private final class MutableProcesses: ProcessListing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _list: [RunningProcess] = []
+    func set(_ l: [RunningProcess]) { lock.withLock { _list = l } }
+    func runningProcesses() -> [RunningProcess] { lock.withLock { _list } }
+}
+
+@Suite("Finder: denetim düzeltmeleri (hata + kalkma, yeniden doğrulama, bekleme, -1711/-1744)")
+struct FinderAuditFixTests {
+    @Test("tek öğe: olay hata döndü ama öğe kalktı: başarı (konum nil)")
+    func singleErrorButGone() async throws {
+        let t = try TempTree()
+        let a = try t.dir("Apps/A.app", in: t.root)
+        let bin = try t.dir("Bin", in: t.root)
+        let rec = FinderRecycler(timeout: 5, sender: { u, _ in
+            try move(u, to: bin)
+            throw FinderRecycleError.finderFailed(code: -10000, message: nil)
+        })
+        let r = await rec.recycle([a])
+        if case .success(let loc) = r[a] { #expect(loc == nil) } else { Issue.record("başarı olmalı: \(String(describing: r[a]))") }
+        // Kalkmadıysa hata korunur.
+        let b = try t.dir("Apps/B.app", in: t.root)
+        let keep = FinderRecycler(timeout: 5, sender: { _, _ in throw FinderRecycleError.userCancelled })
+        #expect(failure(await keep.recycle([b])[b]) == .userCancelled)
+    }
+
+    @Test("yedek: tek öğeli olay iptal döndü ama öğe kalktı: başarı; yedek durmaz")
+    func fallbackErrorButGone() async throws {
+        let t = try TempTree()
+        let a = try t.dir("Apps/A.app", in: t.root)
+        let b = try t.dir("Apps/B.app", in: t.root)
+        let bin = try t.dir("Bin", in: t.root)
+        let singles = Counter()
+        let rec = FinderRecycler(timeout: 5, sender: { u, _ in
+            singles.hit(u.lastPathComponent)
+            try move(u, to: bin)
+            throw FinderRecycleError.userCancelled
+        }, batchSender: { _, _ in throw FinderRecycleError.finderFailed(code: -10000, message: nil) })
+        let r = await rec.recycle([a, b])
+        #expect(singles.log == ["A.app", "B.app"], "\(singles.log)")
+        #expect(succeeded(r[a]) && succeeded(r[b]))
+    }
+
+    @Test("yedekten önce yeniden doğrulama: geçmeyen öğe Finder'a gitmez, ret nedeni korunur")
+    func revalidateBeforeFallback() async throws {
+        let t = try TempTree()
+        let a = try t.dir("Apps/A.app", in: t.root)
+        let b = try t.dir("Apps/B.app", in: t.root)
+        let bin = try t.dir("Bin", in: t.root)
+        let singles = Counter()
+        let rec = FinderRecycler(timeout: 5, sender: { u, _ in singles.hit(u.lastPathComponent); try move(u, to: bin); return nil },
+                                 batchSender: { _, _ in })
+        let r = await rec.recycle([a, b], revalidate: { $0.lastPathComponent == "A.app" ? "çalışıyor" : nil })
+        #expect(singles.log == ["B.app"], "\(singles.log)")
+        #expect(failure(r[a]) == .revalidationFailed("çalışıyor") && succeeded(r[b]))
+        #expect(failure(r[a])?.errorDescription?.contains("çalışıyor") == true)
+        #expect(t.exists(a) && !t.exists(b))
+    }
+
+    @Test("Trasher: toplu olaydan sonra uygulama açıldıysa yedek olay gönderilmez (appCheck yeniden)")
+    func trasherRevalidatesFallback() async throws {
+        let t = try TempTree()
+        let (apps, basePolicy) = try AppFixture.setup(t)
+        var p = basePolicy
+        p.writeProbe = AppWriteProbe { _, _ in AppWriteFacts(parentWritable: true, bundleErrno: EPERM, ownerUID: getuid()) }
+        let a = try AppFixture.app(t, in: apps, "Aaa", id: "com.example.aaa")
+        let b = try AppFixture.app(t, in: apps, "Bbb", id: "com.example.bbb")
+        func auth(_ u: URL) -> CleanItem {
+            var i = AppFixture.appItem(u)
+            i.needsAuthorization = true
+            i.preselect = false
+            return i
+        }
+        let items = [auth(a), auth(b)]
+        let procs = MutableProcesses()
+        let bin = try t.dir("Bin", in: t.root)
+        let singles = Counter(), batches = Counter()
+        let finder = FinderRecycler(timeout: 5, sender: { u, _ in singles.hit(u.lastPathComponent); try move(u, to: bin); return nil },
+                                    batchSender: { _, _ in
+                                        batches.hit()
+                                        procs.set([RunningProcess(pid: 9, name: "Aaa", path: nil)]) // A açıldı
+                                    })
+        let tr = Trasher(policy: p, commands: FakeCommands(), processes: procs, selfExecutable: nil, selfBundleID: nil,
+                         mover: { _ in Issue.record("normal taşıyıcı kullanılmamalı"); return nil }, privilegedRecycler: finder)
+        let r = await tr.trash(items, dryRun: false)
+        #expect(batches.n == 1)
+        #expect(singles.log == ["Bbb.app"], "\(singles.log)")
+        #expect(r.done.map(\.path) == [b.path], "\(r)")
+        #expect(r.refused.first { $0.path == a.path }?.reason.contains("çalışıyor") == true, "\(r)")
+        #expect(t.exists(a) && !t.exists(b))
+    }
+
+    @Test("bekleme: toplu olay geç bitirdiyse yedek olay gönderilmez; bitirmediyse 3 bekleme sonra yedek")
+    func settleBeforeFallback() async throws {
+        let t = try TempTree()
+        let a = try t.dir("Apps/A.app", in: t.root)
+        let b = try t.dir("Apps/B.app", in: t.root)
+        let bin = try t.dir("Bin", in: t.root)
+        let sleeps = Counter()
+        let late = FinderRecycler(timeout: 5, sender: { _, _ in Issue.record("yedek gönderilmemeli"); return nil },
+                                  batchSender: { _, _ in }, sleeper: { d in
+                                      sleeps.hit("\(d)")
+                                      if sleeps.n == 2 { try? move(a, to: bin); try? move(b, to: bin) } // geç bitti
+                                  })
+        let r = await late.recycle([a, b])
+        #expect(succeeded(r[a]) && succeeded(r[b]) && sleeps.n == 2, "\(sleeps.log)")
+        #expect(sleeps.log.first == "\(FinderRecycler.settleStep)")
+
+        let c = try t.dir("Apps/C.app", in: t.root)
+        let d = try t.dir("Apps/D.app", in: t.root)
+        let sleeps2 = Counter(), singles = Counter()
+        let never = FinderRecycler(timeout: 5, sender: { u, _ in singles.hit(); try move(u, to: bin); return nil },
+                                   batchSender: { _, _ in }, sleeper: { _ in sleeps2.hit() })
+        let r2 = await never.recycle([c, d])
+        #expect(sleeps2.n == FinderRecycler.settlePolls && singles.n == 2)
+        #expect(succeeded(r2[c]) && succeeded(r2[d]))
+        // Yedek yoksa (iptal) beklenmez.
+        let e = try t.dir("Apps/E.app", in: t.root)
+        let f = try t.dir("Apps/F.app", in: t.root)
+        let sleeps3 = Counter()
+        let cancelled = FinderRecycler(timeout: 5, sender: { _, _ in nil },
+                                       batchSender: { _, _ in throw FinderRecycleError.userCancelled },
+                                       sleeper: { _ in sleeps3.hit() })
+        _ = await cancelled.recycle([e, f])
+        #expect(sleeps3.n == 0)
+    }
+
+    @Test("-1711 ve -1744: ayrı Türkçe metin, yedek yok")
+    func waitCancelledAndConsent() async throws {
+        #expect(FinderRecycler.mapError(code: -1711, message: "x") == .waitCancelled)
+        #expect(FinderRecycler.mapError(code: -1744, message: nil) == .automationConsentRequired)
+        #expect(FinderRecycler.mapError(code: -1743, message: nil) == .automationDenied)
+        #expect(FinderRecycleError.waitCancelled.code == -1711 && FinderRecycleError.automationConsentRequired.code == -1744)
+        #expect(FinderRecycleError.waitCancelled.errorDescription?.contains("iptal edildi") == true)
+        #expect(FinderRecycleError.automationConsentRequired.errorDescription?.contains("Otomasyon") == true)
+        for err in [FinderRecycleError.waitCancelled, .automationConsentRequired, .revalidationFailed("x")] {
+            #expect(!FinderRecycler.fallsBackToSingle(after: err), "\(err)")
+            #expect(FinderRecycler.stopsFallback(err))
+        }
+        let t = try TempTree()
+        let a = try t.dir("Apps/A.app", in: t.root)
+        let b = try t.dir("Apps/B.app", in: t.root)
+        let rec = FinderRecycler(timeout: 5, sender: { _, _ in Issue.record("yedek denenmemeli"); return nil },
+                                 batchSender: { _, _ in throw NSError(domain: NSOSStatusErrorDomain, code: -1711) })
+        let r = await rec.recycle([a, b])
+        #expect(failure(r[a]) == .waitCancelled && failure(r[b]) == .waitCancelled)
+    }
+}
+
+@Suite("İzin hatası metni: Tam Disk Erişimi yalnız EPERM'de")
+struct PermissionTextTests {
+    let home = URL(fileURLWithPath: "/Users/biri")
+    let box = "/Users/biri/Library/Containers/com.microsoft.Word"
+
+    @Test("EACCES Containers'ta: genel izin metni; EPERM (doğrudan ya da Cocoa altında): Tam Disk Erişimi")
+    func eaccesVsEperm() {
+        let none: (String) -> Bool = { _ in false }
+        let eacces = NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        let a = Trasher.describe(eacces, path: box, home: home, hasLockFlag: none)
+        #expect(a.contains("izin yok") && !a.contains(Trasher.fullDiskAccessMarker))
+        let cocoaEperm = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError,
+                                 userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))])
+        #expect(Trasher.describe(cocoaEperm, path: box, home: home, hasLockFlag: none).contains(Trasher.fullDiskAccessMarker))
+        let cocoaBare = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError)
+        #expect(!Trasher.describe(cocoaBare, path: box, home: home, hasLockFlag: none).contains(Trasher.fullDiskAccessMarker))
+    }
+
+    @Test("kilitli bayrak (öğede ya da üst klasörde): Tam Disk Erişimi yerine kilitli metni")
+    func lockedFlag() {
+        let eperm = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+        let onItem = Trasher.describe(eperm, path: box, home: home, hasLockFlag: { $0 == box })
+        #expect(onItem.contains("kilitli") && !onItem.contains(Trasher.fullDiskAccessMarker))
+        let onParent = Trasher.describe(eperm, path: box, home: home, hasLockFlag: { $0 == "/Users/biri/Library/Containers" })
+        #expect(onParent.contains("kilitli"))
+        // İzin hatası değilse bayrağa bakılmaz.
+        let enoent = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))
+        #expect(!Trasher.describe(enoent, path: box, home: home, hasLockFlag: { _ in true }).contains("kilitli"))
+    }
+
+    @Test("hasLockFlag: gerçek uchg bayrağını görür (geçici dosya)")
+    func realUchg() throws {
+        let t = try TempTree()
+        let f = try t.file("kilitli.txt", bytes: 4)
+        #expect(!Trasher.hasLockFlag(f.path))
+        #expect(chflags(f.path, UInt32(UF_IMMUTABLE)) == 0)
+        defer { _ = chflags(f.path, 0) }
+        #expect(Trasher.hasLockFlag(f.path))
+        #expect(!Trasher.hasLockFlag(t.root.appending(path: "yok").path))
     }
 }

@@ -398,10 +398,33 @@ public struct Trasher: Sendable {
 
     /// Taşıma hatası için okunur neden. `path` ve `home` verilirse Tam Disk Erişimi korumasındaki yolda izin
     /// hatası "yönetici izni" yerine Tam Disk Erişimi yönlendirmesiyle anlatılır.
-    static func describe(_ error: any Error, path: String? = nil, home: URL? = nil) -> String {
+    ///
+    /// Tam Disk Erişimi metni yalnız EPERM'de (TCC EPERM verir). EACCES (sıradan izin) ve öğede ya da üst klasöründe
+    /// değiştirilemez/kilitli bayrağı (`uchg`/`schg`, `uappnd`/`sappnd`) varsa o metin verilir.
+    static func describe(_ error: any Error, path: String? = nil, home: URL? = nil,
+                         hasLockFlag: (String) -> Bool = Trasher.hasLockFlag) -> String {
         guard isPermissionError(error) else { return error.localizedDescription }
-        if let path, let home, isFullDiskAccessProtected(path, home: home) { return fullDiskAccessRefusal }
+        if let path, hasLockFlag(path) || hasLockFlag((path as NSString).deletingLastPathComponent) {
+            return "kilitli (değiştirilemez bayrağı var, ör. Finder'da 'Kilitli'): kilidi kaldırıp yeniden deneyin"
+        }
+        if isEPERM(error), let path, let home, isFullDiskAccessProtected(path, home: home) { return fullDiskAccessRefusal }
         return "izin yok (yönetici izni gerekir): \(error.localizedDescription)"
+    }
+
+    /// Hata (ya da altındaki hata) POSIX EPERM mi?
+    static func isEPERM(_ error: any Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSPOSIXErrorDomain { return ns.code == Int(EPERM) }
+        guard let under = ns.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
+        return under.domain == NSPOSIXErrorDomain && under.code == Int(EPERM)
+    }
+
+    /// Yolda (bağlantı izlenmeden) değiştirilemez ya da yalnız-ekleme bayrağı var mı? Yalnız `lstat`.
+    static func hasLockFlag(_ path: String) -> Bool {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return false }
+        let mask = UInt32(UF_IMMUTABLE | SF_IMMUTABLE | UF_APPEND | SF_APPEND)
+        return st.st_flags & mask != 0
     }
 
     /// Günlük: öğe, yöntem ve sonuç (yol ve neden `.public`; içerik yok).
@@ -580,7 +603,12 @@ public struct Trasher: Sendable {
         // Sonuç, verilen URL nesnesiyle aranır (taşımadan sonra yeniden kurulan URL farklı olabilir).
         let urls = batch.map(\.url)
         TrashLog.logger.info("Yetkili taşıma (Finder): \(urls.count, privacy: .public) uygulama paketi")
-        let results = await privileged.recycle(urls)
+        // Finder'ın yedek tek öğeli olayından önce her öğe yeniden doğrulanır (dar istisna, `appCheck` ile aynı).
+        let byURL = Dictionary(zip(urls, batch), uniquingKeysWith: { a, _ in a })
+        let results = await privileged.recycle(urls, revalidate: { url in
+            guard let item = byURL[url] else { return "taşıma listesinde olmayan yol" }
+            return self.appCheck(for: item, allowingAuthorization: true).reason
+        })
         for (item, url) in zip(batch, urls) {
             switch results[url] {
             case .success(let resulting):

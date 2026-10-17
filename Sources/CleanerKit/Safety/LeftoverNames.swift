@@ -72,7 +72,8 @@ public enum LeftoverNames {
     /// Ana klasördeki `~/.<x>` bağımsız bir komut satırı aracının kurulum klasörü mü (ör. `~/.deno`)? (kullanıcı
     /// kararı, 2026-10-17: böyle klasör, aynı adlı uygulama kurulu olsa bile, hiçbir zaman ad artığı adayı olmaz.)
     ///
-    /// Koşul: doğrudan `bin/` alt klasörü (bağlantı değil) en az bir bağımsız çalıştırılabilir içeriyor: çalıştırma
+    /// Koşul: `bin/` alt klasörü (doğrudan ya da aynı klasörün içine giden bağlantı, ör. `versions/current/bin`;
+    /// dışarıya giden bağlantı sayılmaz) en az bir bağımsız çalıştırılabilir içeriyor: çalıştırma
     /// biti olan sıradan dosya ya da çözülünce böyle bir dosyaya giden ve hedefi bir uygulama paketinin (`*.app`)
     /// içinde olmayan bağlantı. Hedefi uygulama paketine giden bağlantılar uygulamanın kendi CLI'ıdır (bağımsız
     /// değil; `InstalledApps.commandMatches` iç komut kuralı: kırmızı + not). Yalnız ad listesi, `lstat`, `stat` ve
@@ -80,10 +81,9 @@ public enum LeftoverNames {
     public static let standaloneCLIReason = "bağımsız komut satırı aracı klasörü (içinde bin/ var; ad artığı olmaz)"
 
     public static func isStandaloneCLIFolder(_ url: URL) -> Bool {
-        let bin = url.appending(path: "bin")
         var st = stat()
         guard lstat(url.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
-              lstat(bin.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR,
+              let bin = binDirectory(of: url),
               let names = try? FileManager.default.contentsOfDirectory(atPath: bin.path)
         else { return false }
         func executableFile(_ s: stat) -> Bool {
@@ -101,6 +101,27 @@ public enum LeftoverNames {
             if !insideApp { return true }
         }
         return false
+    }
+
+    /// `~/.<x>/bin` klasörü: doğrudan klasörse kendisi; bağlantıysa yalnız çözülen hedef aynı `~/.<x>` klasörünün
+    /// İÇİNDE bir klasörse o hedef (ör. `bin -> versions/current/bin`). Dışarıya giden bağlantı sayılmaz (nil).
+    static func binDirectory(of url: URL) -> URL? {
+        let bin = url.appending(path: "bin")
+        var st = stat()
+        guard lstat(bin.path, &st) == 0 else { return nil }
+        switch st.st_mode & S_IFMT {
+        case S_IFDIR:
+            return bin
+        case S_IFLNK:
+            guard let target = PathUtil.realPath(bin.path), let root = PathUtil.realPath(url.path) else { return nil }
+            let (t, r) = (PathUtil.key(target), PathUtil.key(root))
+            guard t != r, PathUtil.isSameOrDescendant(t, of: r) else { return nil }
+            var tst = stat()
+            guard stat(target, &tst) == 0, (tst.st_mode & S_IFMT) == S_IFDIR else { return nil }
+            return URL(fileURLWithPath: target, isDirectory: true)
+        default:
+            return nil
+        }
     }
 
     /// Ad artığı klasörün kendisi ya da doğrudan çocuğu `.git` içeriyor mu? Yalnız `lstat` ile varlık; içerik okunmaz.
